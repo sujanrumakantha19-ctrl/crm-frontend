@@ -1,0 +1,92 @@
+import { api } from '@/lib/api';
+import type { Lead } from '@/types';
+
+export interface LeadQuery {
+  page?: number;
+  limit?: number;
+  sort?: string;
+  status?: string;
+  assignedTo?: string;
+  projectId?: string;
+  [key: string]: string | number | undefined;
+}
+
+export interface FollowUpQuery {
+  page?: number;
+  limit?: number;
+  assignedTo?: string;
+  search?: string;
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  outcome?: string;
+}
+
+export interface FollowUpResponse {
+  success: boolean;
+  data: Array<{
+    id: string;
+    followUpId: string;
+    leadId: string;
+    leadName: string;
+    phone: string;
+    city?: string;
+    status: string;
+    staffId?: string;
+    staffName?: string;
+    projectId?: string;
+    date: string;
+    nextFollowUpDate?: string;
+    outcome: string;
+    notes?: string;
+    nextAction?: string;
+  }>;
+  total: number;
+  page: number;
+  pages: number;
+  stats: {
+    totalCount: number;
+    positiveCount: number;
+    negativeCount: number;
+  };
+}
+
+export const leadService = {
+  getAll(params?: LeadQuery) {
+    return api.get<Lead[]>('/leads', params as Record<string, string | number | undefined>);
+  },
+  getCounts() {
+    return api.get<{ Open: number; Reserved: number; Qualified: number; Unqualified: number; Customer: number }>('/leads/counts');
+  },
+  getById(id: string) {
+    return api.get<Lead>(`/leads/${id}`);
+  },
+  getFollowUps(params?: FollowUpQuery) {
+    return api.get<any>('/leads/follow-ups', params as Record<string, string | number | undefined>);
+  },
+  getByStatus(status: string) {
+    return api.get<Lead[]>(`/leads/status/${status}`);
+  },
+  getByUser(userId: string) {
+    return api.get<Lead[]>(`/leads/user/${userId}`);
+  },
+  getByProject(projectId: string) {
+    return api.get<Lead[]>(`/leads/project/${projectId}`);
+  },
+  checkPhone(phone: string) {
+    return api.get<{
+      success: boolean;
+      exists: boolean;
+      lead?: { id: string; customerName: string; phone: string; status: string; assignedToName: string };
+    }>(`/leads/check-phone/${encodeURIComponent(phone)}`);
+  },
+  create(data: Partial<Lead>) {
+    return api.post<Lead>('/leads', data);
+  },
+  update(id: string, data: Partial<Lead>) {
+    return api.put<Lead>(`/leads/${id}`, data);
+  },
+  delete(id: string) {
+    return api.delete(`/leads/${id}`);
+  },
+};

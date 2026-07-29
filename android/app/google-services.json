@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "158411272704",
+    "project_id": "crm-re-eded9",
+    "storage_bucket": "crm-re-eded9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:158411272704:android:ed974158d58165a58a9ee5",
+        "android_client_info": {
+          "package_name": "com.samyco.crm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC93bscq4DRGpaaJQEWAFlmBNYhL2wM8m8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

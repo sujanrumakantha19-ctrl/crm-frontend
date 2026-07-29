@@ -1,0 +1,29 @@
+import { api } from '@/lib/api';
+import type { AttendanceRecord } from '@/types';
+
+export const attendanceService = {
+  getAll(params?: Record<string, string | number | undefined>) {
+    return api.get<AttendanceRecord[]>('/attendance', params);
+  },
+  getById(id: string) {
+    return api.get<AttendanceRecord>(`/attendance/${id}`);
+  },
+  getByStaff(staffId: string, params?: Record<string, string | number | undefined>) {
+    return api.get<AttendanceRecord[]>(`/attendance/staff/${staffId}`, params);
+  },
+  getByDate(date: string) {
+    return api.get<AttendanceRecord[]>(`/attendance/date/${date}`);
+  },
+  getToday() {
+    return api.get<AttendanceRecord[]>('/attendance/today');
+  },
+  create(data: Partial<AttendanceRecord>) {
+    return api.post<AttendanceRecord>('/attendance', data);
+  },
+  update(id: string, data: Partial<AttendanceRecord>) {
+    return api.put<AttendanceRecord>(`/attendance/${id}`, data);
+  },
+  delete(id: string) {
+    return api.delete(`/attendance/${id}`);
+  },
+};

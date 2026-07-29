@@ -1,0 +1,10 @@
+{
+  "logo": "./public/logo.png",
+  "icon": {
+    "foreground": "./public/logo.png",
+    "background": "./public/logo.png"
+  },
+  "splash": {
+    "backgroundColor": "#FFFFFF"
+  }
+}

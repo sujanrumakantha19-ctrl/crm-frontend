@@ -1,0 +1,1971 @@
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Search, Phone, Calendar, FileCheck, ChevronLeft, ChevronRight, Pencil, Building2, ArrowUpDown, Home, X, MapPin, AlertTriangle, Clock, SlidersHorizontal } from 'lucide-react';
+import { Drawer } from '@/components/shared/Drawer';
+import { useDebounce } from '@/hooks/useDebounce';
+import { Avatar } from '@/components/shared/Avatar';
+import { Modal } from '@/components/shared/Modal';
+import { StatusBadge } from '@/components/shared/StatusBadge';
+import { NameTag } from '@/components/shared/NameTag';
+import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
+import { FollowerAutocomplete } from '@/components/shared/FollowerAutocomplete';
+import { plotService, projectService, leadService, userService, taskService } from '@/services';
+import { useAuth } from '@/context/AuthContext';
+import { getInitials, getAvatarColor } from '@/data/mockData';
+import { toast } from 'sonner';
+import { getTodayStr } from '@/lib/utils';
+import type { Plot, Project } from '@/types';
+
+/* ─── constants ─── */
+type TabType = 'registered' | 'upcoming';
+type SortOption = 'newest' | 'oldest' | 'customer_name' | 'expected_date';
+
+const TABS: { key: TabType; label: string }[] = [
+  { key: 'registered', label: 'Registered' },
+  { key: 'upcoming', label: 'Upcoming' },
+];
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'newest', label: 'Newest First' },
+  { value: 'oldest', label: 'Oldest First' },
+  { value: 'customer_name', label: 'Customer Name (A-Z)' },
+  { value: 'expected_date', label: 'Expected Date' },
+];
+
+interface Filters {
+  search: string;
+  projectFilter: string;
+  paymentMethodFilter: string;
+  paymentStatusFilter: string;
+  bankFilter: string;
+  bookedByFilter: string;
+  loanStageFilter: string;
+  sortBy: SortOption;
+  dateFrom: string;
+  dateTo: string;
+}
+
+const DEFAULT_FILTERS: Filters = {
+  search: '',
+  projectFilter: 'All',
+  paymentMethodFilter: 'All',
+  paymentStatusFilter: 'All',
+  bankFilter: 'All',
+  bookedByFilter: 'All',
+  loanStageFilter: 'All',
+  sortBy: 'newest',
+  dateFrom: '',
+  dateTo: '',
+};
+
+const LOAN_STAGES = [
+  'Not Applied',
+  'Documentation Pending',
+  'Applied',
+  'In Progress',
+  'Sanctioned',
+  'Disbursed',
+  'Rejected',
+];
+
+const getLoanStageBadgeClass = (stage?: string) => {
+  switch (stage) {
+    case 'Sanctioned':
+    case 'Disbursed':
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    case 'In Progress':
+    case 'Applied':
+      return 'bg-blue-50 text-blue-700 border-blue-200';
+    case 'Documentation Pending':
+      return 'bg-amber-50 text-amber-800 border-amber-200';
+    case 'Rejected':
+      return 'bg-rose-50 text-rose-700 border-rose-200';
+    default:
+      return 'bg-slate-100 text-slate-600 border-slate-200';
+  }
+};
+
+/* ─── helpers ─── */
+const formatDate = (dateStr?: string) => {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr.split('T')[0];
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch {
+    return dateStr.split('T')[0] || '—';
+  }
+};
+
+const formatSource = (sourceType?: string, source?: string) => {
+  if (!sourceType && !source) return '—';
+  if (sourceType && source) return `${sourceType} (${source})`;
+  return sourceType || source || '—';
+};
+
+const getDaysPassedFromBooking = (plot: Plot, matchedLead?: any): number | null => {
+  let bookingDateStr: string | undefined = undefined;
+
+  if (plot.bookedBy?.bookingDate) bookingDateStr = String(plot.bookedBy.bookingDate);
+  else if (plot.bookedBy?.bookedAt) bookingDateStr = String(plot.bookedBy.bookedAt);
+  else if (plot.bookedBy?.date) bookingDateStr = String(plot.bookedBy.date);
+  else if ((plot as any).bookedDate) bookingDateStr = String((plot as any).bookedDate);
+
+  if (!bookingDateStr && plot.timeline && Array.isArray(plot.timeline)) {
+    const bookingEvt = plot.timeline.find((t: any) =>
+      t.type === 'plot_booked' ||
+      t.type === 'booking_confirmed' ||
+      t.type === 'booking_requested' ||
+      (t.label && t.label.toLowerCase().includes('book'))
+    );
+    if (bookingEvt?.date) bookingDateStr = String(bookingEvt.date);
+  }
+
+  if (!bookingDateStr && matchedLead?.dateAdded) bookingDateStr = String(matchedLead.dateAdded);
+  if (!bookingDateStr && matchedLead?.createdAt) bookingDateStr = String(matchedLead.createdAt);
+  if (!bookingDateStr && (plot as any).createdAt) bookingDateStr = String((plot as any).createdAt);
+
+  if (!bookingDateStr) return null;
+
+  try {
+    const bDate = new Date(bookingDateStr.split('T')[0]);
+    if (isNaN(bDate.getTime())) return null;
+    const today = new Date();
+    bDate.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    const diffTime = today.getTime() - bDate.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays >= 0 ? diffDays : 0;
+  } catch {
+    return null;
+  }
+};
+
+/* ─── component ─── */
+export default function AdminRegistrations() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { role, userId } = useAuth();
+
+  /* ── tabs & filter state ── */
+  const [activeTab, setActiveTab] = useState<TabType>('registered');
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+
+  // Edit payment status modal state for registered tab
+  const [editingPaymentPlot, setEditingPaymentPlot] = useState<Plot | null>(null);
+  const [editPaymentStatusVal, setEditPaymentStatusVal] = useState<string>('Fully Paid');
+  const [savingPaymentStatus, setSavingPaymentStatus] = useState<boolean>(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tabParam = params.get('tab') as TabType;
+    const fromDateParam = params.get('fromDate') || params.get('dateFrom');
+    const toDateParam = params.get('toDate') || params.get('dateTo');
+    const paymentStatusParam = params.get('paymentStatus');
+
+    if (tabParam === 'upcoming' || tabParam === 'registered') {
+      setActiveTab(tabParam);
+    }
+    if (fromDateParam || toDateParam || paymentStatusParam) {
+      setFilters(prev => ({
+        ...prev,
+        dateFrom: fromDateParam || prev.dateFrom,
+        dateTo: toDateParam || prev.dateTo,
+        paymentStatusFilter: paymentStatusParam === 'pending' || paymentStatusParam === 'not_fully_paid' ? 'Pending Payment' : (paymentStatusParam || prev.paymentStatusFilter),
+      }));
+    }
+  }, [location.search]);
+
+  const debouncedSearch = useDebounce(filters.search);
+
+  const committedFilters = useMemo<Filters>(
+    () => ({ ...filters, search: debouncedSearch }),
+    [filters, debouncedSearch],
+  );
+
+  /* ── data state ── */
+  const [plots, setPlots] = useState<Plot[]>([]);
+  const [allBanks, setAllBanks] = useState<string[]>([]);
+  const [allPlots, setAllPlots] = useState<Plot[]>([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [allProjects, setAllProjects] = useState<any[]>([]);
+  const [allLeads, setAllLeads] = useState<any[]>([]);
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [whatsAppCustomer, setWhatsAppCustomer] = useState<{ phone: string; name: string } | null>(null);
+
+  /* ── confirm registration modal states ── */
+  const [confirmingRegPlot, setConfirmingRegPlot] = useState<Plot | null>(null);
+  const [confirmRegDate, setConfirmRegDate] = useState(() => getTodayStr());
+  const [submittingConfirmReg, setSubmittingConfirmReg] = useState(false);
+
+  /* ── stable refs ── */
+  const plotsRef = useRef<Plot[]>([]);
+  plotsRef.current = plots;
+  const filtersRef = useRef(committedFilters);
+  filtersRef.current = committedFilters;
+  const roleRef = useRef(role);
+  roleRef.current = role;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+
+  /* ── fetch projects & all plots ── */
+  useEffect(() => {
+    projectService.getAll({ limit: 100 }).then(res => {
+      setAllProjects((res.data || []).map((p: any) => ({
+        id: p.id || p._id,
+        _id: p.id || p._id,
+        name: p.name,
+        displayId: p.displayId,
+        location: p.location,
+        surveyNumber: p.surveyNumber
+      })));
+    }).catch(() => {});
+
+    plotService.getAll({ limit: 500 }).then(res => {
+      if (res.data) setAllPlots(res.data);
+    }).catch(() => {});
+
+    leadService.getAll({ limit: 500 }).then(res => {
+      if (res.data) setAllLeads(res.data);
+    }).catch(() => {});
+
+    Promise.all([
+      userService.getAll({ role: 'admin', limit: 100 }).catch(() => ({ data: [] })),
+      userService.getAll({ role: 'staff', limit: 200 }).catch(() => ({ data: [] })),
+    ]).then(([adminRes, staffRes]) => {
+      const admins = (adminRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'admin' }));
+      const staff = (staffRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'staff' }));
+      setAllUsers([...admins, ...staff]);
+    });
+  }, []);
+
+  const getLeadForPlot = useCallback((plot: Plot) => {
+    const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || '';
+    const custPhone = plot.bookedBy?.phone || (plot as any).leadInfo?.phone || '';
+    const bLeadId = plot.bookedBy?.leadId || (plot as any).leadId || (plot as any).leadInfo?._id;
+
+    if (bLeadId) {
+      const found = allLeads.find(l => String(l.id || l._id) === String(bLeadId));
+      if (found) return found;
+    }
+    const phone10 = custPhone ? custPhone.replace(/\D/g, '').slice(-10) : '';
+    if (phone10) {
+      const found = allLeads.find(l => l.phone && l.phone.replace(/\D/g, '').slice(-10) === phone10);
+      if (found) return found;
+    }
+    if (custName) {
+      const found = allLeads.find(l => l.customerName && l.customerName.toLowerCase().trim() === custName.toLowerCase().trim());
+      if (found) return found;
+    }
+    return null;
+  }, [allLeads]);
+
+  /* ── stable fetch ── */
+  const fetchPlots = useCallback(async (p = 1, { replace = true, showRefreshing = false } = {}) => {
+    const f = filtersRef.current;
+    const tab = activeTabRef.current;
+    const isStaff = roleRef.current === 'staff';
+
+    if (showRefreshing && plotsRef.current.length > 0) setRefreshing(true);
+    else setLoading(true);
+
+    try {
+      const params: Record<string, any> = { page: p, limit: 10 };
+
+      if (tab === 'registered') {
+        params.status = 'Registered';
+      } else {
+        params.status = 'Booked';
+      }
+
+      if (f.projectFilter !== 'All') params.projectId = f.projectFilter;
+      if (f.paymentMethodFilter !== 'All') params['bookedBy.paymentMethod'] = f.paymentMethodFilter;
+      if (f.paymentMethodFilter === 'LOAN' && f.bankFilter && f.bankFilter !== 'All') {
+        params['bookedBy.bank'] = f.bankFilter;
+      }
+      if (f.search) params.search = f.search;
+
+
+      if (f.sortBy) {
+        if (f.sortBy === 'oldest') params.sort = 'createdAt';
+        else if (f.sortBy === 'customer_name') params.sort = 'bookedBy.name';
+        else params.sort = '-createdAt';
+      }
+
+      if (f.dateFrom || f.dateTo) {
+        const dateField = tab === 'registered' ? 'registrationDate' : 'expectedRegistrationDate';
+        if (f.dateFrom) params[`${dateField}[gte]`] = f.dateFrom;
+        if (f.dateTo) params[`${dateField}[lte]`] = f.dateTo;
+      }
+
+      let res: any;
+      if (isStaff) {
+        params.assignedTo = userIdRef.current;
+        res = await plotService.getMyBookings(params);
+      } else {
+        res = await plotService.getAll(params);
+      }
+
+      const data = (res?.data || []) as Plot[];
+      setPlots(prev => {
+        const combined = replace ? data : [...prev, ...data];
+        const seenIds = new Set<string>();
+        return combined.filter(p => {
+          const pid = String(p.id || (p as any)._id || '');
+          if (!pid || seenIds.has(pid)) return false;
+          seenIds.add(pid);
+          return true;
+        });
+      });
+      const totalCount = res?.total ?? res?.count ?? data.length;
+      setTotal(totalCount);
+      setTotalPages(Math.max(1, Math.ceil(totalCount / 10)));
+      setPage(p);
+
+      const banks = data.map((p: any) => p.bookedBy?.bank).filter((b: string | undefined) => !!b && !!b.trim());
+      setAllBanks(prev => Array.from(new Set([...prev, ...banks])).sort());
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to load registrations');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [allUsers]);
+
+  useEffect(() => {
+    if (activeTab === 'registered' && filters.sortBy === 'expected_date') {
+      setFilters(prev => ({ ...prev, sortBy: 'newest' }));
+    }
+  }, [activeTab, filters.sortBy]);
+
+  useEffect(() => {
+    fetchPlots(1);
+  }, [activeTab, committedFilters, fetchPlots]);
+
+  /* ── multi-booking helpers ── */
+  const getCustomerBookedPlots = useCallback((customerName?: string, phone?: string) => {
+    if (!customerName && !phone) return [];
+    const nameLower = customerName?.toLowerCase().trim() || '';
+    const phoneClean = phone?.replace(/\D/g, '') || '';
+
+    return allPlots.filter(p => {
+      const pName = p.bookedBy?.name?.toLowerCase().trim();
+      const pPhone = p.bookedBy?.phone?.replace(/\D/g, '');
+      return (nameLower && pName && pName === nameLower) || (phoneClean && pPhone && pPhone === phoneClean);
+    });
+  }, [allPlots]);
+
+  const getCustomerProjects = useCallback((customerName?: string, phone?: string) => {
+    const custPlots = getCustomerBookedPlots(customerName, phone);
+    const projMap = new Map<string, { project: any; latestPlotNumber: string }>();
+
+    custPlots.forEach(p => {
+      const pid = typeof p.projectId === 'object' ? (p.projectId as any)._id || (p.projectId as any).id : p.projectId;
+      if (pid && !projMap.has(String(pid))) {
+        const found = allProjects.find(pr => String(pr.id || pr._id) === String(pid));
+        if (found) {
+          projMap.set(String(pid), { project: found, latestPlotNumber: String(p.plotNumber) });
+        }
+      }
+    });
+
+    return Array.from(projMap.values());
+  }, [getCustomerBookedPlots, allProjects]);
+
+  /* ── client filter & sort ── */
+  /* ── filtered list returned directly from DB ── */
+  const filtered = useMemo(() => {
+    // Deduplicate by plot ID first
+    const seenIds = new Set<string>();
+    let result = plots.filter(p => {
+      const pid = String(p.id || (p as any)._id || '');
+      if (!pid || seenIds.has(pid)) return false;
+      seenIds.add(pid);
+      return true;
+    });
+
+    // Apply search filter: Customer Name, Mobile Number, Project Name
+    if (filters.search.trim()) {
+      const q = filters.search.toLowerCase().trim();
+      const qPhoneClean = q.replace(/\D/g, '');
+
+      result = result.filter(plot => {
+        const matchedLead = getLeadForPlot(plot);
+        const custName = (plot.bookedBy?.name || matchedLead?.customerName || '').toLowerCase().trim();
+        const custPhone = (plot.bookedBy?.phone || matchedLead?.phone || '').trim();
+        const custPhoneClean = custPhone.replace(/\D/g, '');
+
+        const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id || (plot.projectId as any).id : plot.projectId;
+        const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
+        const projName = (projObj?.name || (plot as any).projectName || '').toLowerCase().trim();
+
+        const matchesName = custName.includes(q);
+        const matchesPhone = qPhoneClean ? custPhoneClean.includes(qPhoneClean) : custPhone.toLowerCase().includes(q);
+        const matchesProject = projName.includes(q);
+
+        return matchesName || matchesPhone || matchesProject;
+      });
+    }
+
+    // Apply Payment Status filter
+    if (filters.paymentStatusFilter !== 'All') {
+      result = result.filter(plot => {
+        const pStatus = plot.bookedBy?.paymentStatus || (plot as any).paymentStatus || 'Not Paid';
+        if (filters.paymentStatusFilter === 'Pending Payment' || filters.paymentStatusFilter === 'Not Fully Paid') {
+          return pStatus !== 'Fully Paid';
+        }
+        return pStatus === filters.paymentStatusFilter;
+      });
+    }
+
+    // Apply date range filter (registrationDate for registered tab, expectedRegistrationDate for upcoming tab)
+    if (filters.dateFrom || filters.dateTo) {
+      result = result.filter(p => {
+        const rawDate = activeTab === 'registered' ? p.registrationDate : p.expectedRegistrationDate;
+        if (!rawDate) return false;
+        const dStr = String(rawDate).split('T')[0];
+        if (filters.dateFrom && dStr < filters.dateFrom) return false;
+        if (filters.dateTo && dStr > filters.dateTo) return false;
+        return true;
+      });
+    }
+
+    // Apply Booked By filter
+    if (filters.bookedByFilter !== 'All') {
+      const filterVal = filters.bookedByFilter.toLowerCase().trim();
+      const targetUser = allUsers.find(u => u.name.toLowerCase().trim() === filterVal);
+      const targetId = targetUser?.id ? String(targetUser.id).toLowerCase() : '';
+
+      result = result.filter(plot => {
+        const matchedLead = getLeadForPlot(plot);
+        const assignedToText = (plot.assignedTo || (plot as any).assignedToName || matchedLead?.assignedToDisplayId || matchedLead?.assignedToName || '').toString().toLowerCase().trim();
+
+        const pAssignedTo = plot.assignedTo ? String(plot.assignedTo).toLowerCase().trim() : '';
+        const pAssignedToName = (plot as any).assignedToName ? String((plot as any).assignedToName).toLowerCase().trim() : '';
+        const lAssignedToId = matchedLead?.assignedTo ? String(matchedLead.assignedTo).toLowerCase().trim() : '';
+        const lAssignedToDisplayId = matchedLead?.assignedToDisplayId ? String(matchedLead.assignedToDisplayId).toLowerCase().trim() : '';
+        const lAssignedToName = matchedLead?.assignedToName ? String(matchedLead.assignedToName).toLowerCase().trim() : '';
+
+        return (
+          assignedToText.includes(filterVal) ||
+          (targetId && (pAssignedTo === targetId || lAssignedToId === targetId)) ||
+          (pAssignedTo && pAssignedTo === filterVal) ||
+          (pAssignedToName && pAssignedToName === filterVal) ||
+          (lAssignedToDisplayId && lAssignedToDisplayId === filterVal) ||
+          (lAssignedToName && lAssignedToName === filterVal)
+        );
+      });
+    }
+    if (filters.loanStageFilter !== 'All') {
+      result = result.filter(plot => {
+        const matchedLead = getLeadForPlot(plot);
+        const stage = plot.bookedBy?.loanStage || matchedLead?.loanStage || 'Not Applied';
+        return stage === filters.loanStageFilter;
+      });
+    }
+
+    const todayStr = getTodayStr();
+
+    // Get expected reg date for sorting (works for both tabs)
+    const getExpDate = (p: Plot): string => {
+      const d = p.expectedRegistrationDate ? String(p.expectedRegistrationDate).split('T')[0] : '';
+      return d;
+    };
+
+    const urgencyScore = (p: Plot): number => {
+      const d = getExpDate(p);
+      if (!d) return 9999;
+      if (d < todayStr) {
+        // Past overdue: highest priority, most overdue first
+        const diffDays = Math.floor((new Date(todayStr).getTime() - new Date(d).getTime()) / (1000 * 3600 * 24));
+        return -10000 + diffDays;
+      }
+      const diffFuture = Math.floor((new Date(d).getTime() - new Date(todayStr).getTime()) / (1000 * 3600 * 24));
+      return diffFuture;
+    };
+
+    // Deduplicate by customer: keep the most relevant plot per customer
+    const seen = new Map<string, Plot>();
+    result.forEach(p => {
+      const nameKey = p.bookedBy?.name?.toLowerCase().trim() || '';
+      const phoneKey = p.bookedBy?.phone?.replace(/\D/g, '').slice(-10) || '';
+      const customerKey = phoneKey || nameKey;
+      if (!customerKey) return;
+
+      const existing = seen.get(customerKey);
+      if (!existing) {
+        seen.set(customerKey, p);
+      } else if (activeTab === 'upcoming') {
+        // Keep the plot with the earliest expected reg date
+        if (urgencyScore(p) < urgencyScore(existing)) {
+          seen.set(customerKey, p);
+        }
+      } else {
+        // Registered tab: keep the most recently registered
+        const existingDate = existing.registrationDate ? new Date(existing.registrationDate).getTime() : 0;
+        const newDate = p.registrationDate ? new Date(p.registrationDate).getTime() : 0;
+        if (newDate > existingDate) {
+          seen.set(customerKey, p);
+        }
+      }
+    });
+
+    result = Array.from(seen.values());
+
+    // Apply sorting selection dynamically based on user choice
+    const sortBy = filters.sortBy;
+    if (sortBy === 'customer_name') {
+      result.sort((a, b) => {
+        const nameA = (a.bookedBy?.name || (a as any).leadInfo?.customerName || '').toLowerCase().trim();
+        const nameB = (b.bookedBy?.name || (b as any).leadInfo?.customerName || '').toLowerCase().trim();
+        return nameA.localeCompare(nameB);
+      });
+    } else if (sortBy === 'oldest') {
+      result.sort((a, b) => {
+        const dateA = activeTab === 'registered' 
+          ? (a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime())
+          : (a.expectedRegistrationDate ? new Date(a.expectedRegistrationDate).getTime() : new Date((a as any).createdAt || 0).getTime());
+        const dateB = activeTab === 'registered' 
+          ? (b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime())
+          : (b.expectedRegistrationDate ? new Date(b.expectedRegistrationDate).getTime() : new Date((b as any).createdAt || 0).getTime());
+        return dateA - dateB;
+      });
+    } else if (sortBy === 'newest') {
+      result.sort((a, b) => {
+        const dateA = activeTab === 'registered' 
+          ? (a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime())
+          : (a.expectedRegistrationDate ? new Date(a.expectedRegistrationDate).getTime() : new Date((a as any).createdAt || 0).getTime());
+        const dateB = activeTab === 'registered' 
+          ? (b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime())
+          : (b.expectedRegistrationDate ? new Date(b.expectedRegistrationDate).getTime() : new Date((b as any).createdAt || 0).getTime());
+        return dateB - dateA;
+      });
+    } else if (sortBy === 'expected_date') {
+      result.sort((a, b) => urgencyScore(a) - urgencyScore(b));
+    } else {
+      if (activeTab === 'upcoming') {
+        result.sort((a, b) => urgencyScore(a) - urgencyScore(b));
+      } else {
+        result.sort((a, b) => {
+          const dateA = a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime();
+          const dateB = b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime();
+          return dateB - dateA;
+        });
+      }
+    }
+
+    return result;
+  }, [plots, activeTab, filters.sortBy, filters.search, allProjects, getLeadForPlot]);
+
+  /* ── per-row selected booking plot map ── */
+  const [selectedPlotMap, setSelectedPlotMap] = useState<Record<string, string>>({});
+
+  /* ── edit modal ── */
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingPlot, setEditingPlot] = useState<Plot | null>(null);
+  const [editCustomerPlots, setEditCustomerPlots] = useState<Plot[]>([]);
+  const [editSelectedPlotId, setEditSelectedPlotId] = useState<string>('lead_default');
+  const [editPaymentStatus, setEditPaymentStatus] = useState('Not Paid');
+  const [editBank, setEditBank] = useState('');
+  const [editBankFollowerName, setEditBankFollowerName] = useState('');
+  const [editBankFollowerPhone, setEditBankFollowerPhone] = useState('');
+  const [editLoanStage, setEditLoanStage] = useState('Not Applied');
+  const [editDate, setEditDate] = useState('');
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Auto-complete datalists for Bank & Follower
+  const existingBankFollowers = useMemo(() => {
+    const map = new Map<string, { bank: string; name: string; phone: string }>();
+    allPlots.forEach(p => {
+      if (p.bookedBy?.bankFollowerName?.trim()) {
+        const key = p.bookedBy.bankFollowerName.trim().toLowerCase();
+        if (!map.has(key)) {
+          map.set(key, {
+            bank: p.bookedBy.bank?.trim() || '',
+            name: p.bookedBy.bankFollowerName.trim(),
+            phone: p.bookedBy.bankFollowerPhone?.trim() || '',
+          });
+        }
+      }
+    });
+    return Array.from(map.values());
+  }, [allPlots]);
+
+  const existingBanks = useMemo(() => {
+    const set = new Set<string>();
+    allPlots.forEach(p => {
+      if (p.bookedBy?.bank?.trim()) set.add(p.bookedBy.bank.trim());
+    });
+    return Array.from(set);
+  }, [allPlots]);
+
+  const handleBankFollowerNameChange = (val: string) => {
+    setEditBankFollowerName(val);
+    const matched = existingBankFollowers.find(
+      f => f.name.toLowerCase() === val.trim().toLowerCase()
+    );
+    if (matched) {
+      if (matched.bank) setEditBank(matched.bank);
+      if (matched.phone) setEditBankFollowerPhone(matched.phone);
+    }
+  };
+
+  const handleBankChange = (val: string) => {
+    setEditBank(val);
+    const matchedFollowers = existingBankFollowers.filter(
+      f => f.bank.toLowerCase() === val.trim().toLowerCase()
+    );
+    if (matchedFollowers.length === 1) {
+      setEditBankFollowerName(matchedFollowers[0].name);
+      if (matchedFollowers[0].phone) setEditBankFollowerPhone(matchedFollowers[0].phone);
+    }
+  };
+
+  const handleSavePaymentStatus = async () => {
+    if (!editingPaymentPlot) return;
+    setSavingPaymentStatus(true);
+    try {
+      const plotId = editingPaymentPlot.id || (editingPaymentPlot as any)._id;
+      const updatedBookedBy = editingPaymentPlot.bookedBy ? {
+        ...editingPaymentPlot.bookedBy,
+        paymentStatus: editPaymentStatusVal as any,
+      } : { paymentStatus: editPaymentStatusVal as any };
+
+      await plotService.update(plotId, { bookedBy: updatedBookedBy } as any);
+
+      const matchedLead = getLeadForPlot(editingPaymentPlot);
+      if (matchedLead) {
+        const leadId = matchedLead.id || (matchedLead as any)._id;
+        await leadService.update(leadId, { paymentStatus: editPaymentStatusVal } as any).catch(() => {});
+      }
+
+      toast.success('Payment status updated successfully!');
+      setEditingPaymentPlot(null);
+      void fetchPlots(page, { replace: true, showRefreshing: true });
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update payment status');
+    } finally {
+      setSavingPaymentStatus(false);
+    }
+  };
+
+  const handleConfirmRegisterPlot = async () => {
+    if (!confirmingRegPlot) return;
+    if (!confirmRegDate) {
+      toast.error('Please select a registration date.');
+      return;
+    }
+    setSubmittingConfirmReg(true);
+    try {
+      const plotId = confirmingRegPlot.id || (confirmingRegPlot as any)._id;
+
+      await plotService.registerPlot(plotId, { registrationDate: confirmRegDate });
+
+      // Resolve staff member assigned to this lead/customer
+      let assigneeId: string | undefined = undefined;
+      let assigneeInitials = 'AD';
+
+      let targetLead: any = null;
+      const leadIdCandidate = (confirmingRegPlot.bookedBy as any)?.leadId || (confirmingRegPlot.pendingApproval as any)?.leadId;
+
+      if (leadIdCandidate) {
+        try {
+          const lRes = await leadService.getById(leadIdCandidate);
+          targetLead = lRes.data || lRes;
+        } catch (e) {}
+      }
+
+      if (!targetLead && plotId) {
+        try {
+          const lRes = await leadService.getAll({ plotId: plotId, limit: 1 });
+          if (lRes.data && lRes.data.length > 0) targetLead = lRes.data[0];
+        } catch (e) {}
+      }
+
+      if (targetLead && targetLead.assignedTo) {
+        const rawAssignedTo = targetLead.assignedTo;
+        const aId = typeof rawAssignedTo === 'object' && rawAssignedTo !== null
+          ? (rawAssignedTo._id || rawAssignedTo.id)
+          : rawAssignedTo;
+        const aName = targetLead.assignedToName || (typeof rawAssignedTo === 'object' && rawAssignedTo !== null ? rawAssignedTo.name : undefined);
+
+        if (aId) {
+          assigneeId = String(aId);
+          assigneeInitials = aName
+            ? String(aName).split(' ').map((s: string) => s[0]).join('').toUpperCase().slice(0, 2)
+            : 'ST';
+        }
+      }
+
+      if (!assigneeId) {
+        const staffIdCandidate = confirmingRegPlot.assignedTo || (confirmingRegPlot.bookedBy as any)?.staffId;
+        const staffNameCandidate = (confirmingRegPlot as any).assignedToName || (confirmingRegPlot.bookedBy as any)?.staffName;
+        if (staffIdCandidate) {
+          assigneeId = String(staffIdCandidate);
+          assigneeInitials = staffNameCandidate
+            ? String(staffNameCandidate).split(' ').map((s: string) => s[0]).join('').toUpperCase().slice(0, 2)
+            : 'ST';
+        } else {
+          assigneeId = user?.id;
+          assigneeInitials = user?.initials || 'AD';
+        }
+      }
+
+      const custName = confirmingRegPlot.bookedBy?.name || 'Customer';
+      const pNum = confirmingRegPlot.plotNumber;
+      const projId = confirmingRegPlot.projectId;
+
+      const tasksToCreate = [
+        {
+          title: `Gift handover - Plot #${pNum}`,
+          description: `Gift handover for customer ${custName} of Plot #${pNum}.`,
+          status: 'To Do',
+          priority: 'Medium',
+          assignee: assigneeId,
+          assigneeInitials: assigneeInitials,
+          project: projId,
+          customerName: custName,
+          comments: [],
+          createdAt: new Date().toISOString().split('T')[0],
+        },
+        {
+          title: `Document handover - Plot #${pNum}`,
+          description: `Document handover for customer ${custName} of Plot #${pNum}.`,
+          status: 'To Do',
+          priority: 'High',
+          assignee: assigneeId,
+          assigneeInitials: assigneeInitials,
+          project: projId,
+          customerName: custName,
+          comments: [],
+          createdAt: new Date().toISOString().split('T')[0],
+        },
+        {
+          title: `Balance payment - Plot #${pNum}`,
+          description: `Balance payment for customer ${custName} of Plot #${pNum}.`,
+          status: 'To Do',
+          priority: 'High',
+          assignee: assigneeId,
+          assigneeInitials: assigneeInitials,
+          project: projId,
+          customerName: custName,
+          comments: [],
+          createdAt: new Date().toISOString().split('T')[0],
+        },
+        {
+          title: `Individual chitta and patta - Plot #${pNum}`,
+          description: `Individual chitta and patta transfer for customer ${custName} of Plot #${pNum}.`,
+          status: 'To Do',
+          priority: 'Medium',
+          assignee: assigneeId,
+          assigneeInitials: assigneeInitials,
+          project: projId,
+          customerName: custName,
+          comments: [],
+          createdAt: new Date().toISOString().split('T')[0],
+        }
+      ];
+
+      await Promise.allSettled(tasksToCreate.map(t => taskService.create(t as any)));
+
+      toast.success('Registration confirmed! 4 post-registration tasks created.');
+      setConfirmingRegPlot(null);
+      void fetchPlots(page, { replace: true, showRefreshing: true });
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to confirm registration');
+    } finally {
+      setSubmittingConfirmReg(false);
+    }
+  };
+
+  const handleEditClick = (e: React.MouseEvent, plot: Plot) => {
+    e.stopPropagation();
+    setEditingPlot(plot);
+    const custPlots = getCustomerBookedPlots(plot.bookedBy?.name, plot.bookedBy?.phone);
+    setEditCustomerPlots(custPlots);
+
+    const pid = plot.id || (plot as any)._id;
+    setEditSelectedPlotId(pid);
+
+    setEditPaymentStatus(plot.bookedBy?.paymentStatus || 'Not Paid');
+    setEditBank(plot.bookedBy?.bank ?? '');
+    setEditBankFollowerName(plot.bookedBy?.bankFollowerName ?? '');
+    setEditBankFollowerPhone(plot.bookedBy?.bankFollowerPhone ?? '');
+    const matchedL = getLeadForPlot(plot);
+    setEditLoanStage(plot.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
+
+    const targetDate = activeTab === 'registered' ? plot.registrationDate : plot.expectedRegistrationDate;
+    setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
+
+    setEditModalOpen(true);
+  };
+
+  const handleSwitchEditBooking = (plotId: string) => {
+    setEditSelectedPlotId(plotId);
+    const target = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(plotId));
+    if (target) {
+      setEditPaymentStatus(target.bookedBy?.paymentStatus || 'Not Paid');
+      setEditBank(target.bookedBy?.bank ?? '');
+      setEditBankFollowerName(target.bookedBy?.bankFollowerName ?? '');
+      setEditBankFollowerPhone(target.bookedBy?.bankFollowerPhone ?? '');
+      const matchedL = getLeadForPlot(target);
+      setEditLoanStage(target.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
+
+      const targetDate = activeTab === 'registered' ? target.registrationDate : target.expectedRegistrationDate;
+      setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingPlot) return;
+
+    if (activeTab === 'registered') {
+      const bName = editBank.trim();
+      const bFollower = editBankFollowerName.trim();
+      const bPhone = editBankFollowerPhone.trim();
+
+      const hasAnyBankField = !!bName || !!bFollower || !!bPhone;
+      const hasAllBankFields = !!bName && !!bFollower && !!bPhone;
+
+      if (hasAnyBankField && !hasAllBankFields) {
+        toast.error('If filling Bank details, Bank Name, Follower Name, and Follower Mobile are all mandatory.');
+        return;
+      }
+
+      if (bPhone) {
+        const digits = bPhone.replace(/\D/g, '');
+        if (digits.length !== 10 || !/^[6-9]\d{9}$/.test(digits)) {
+          toast.error('Please enter a valid 10-digit mobile number starting with 6-9 for Bank Follower.');
+          return;
+        }
+      }
+    }
+
+    if (activeTab === 'upcoming' && editDate && editDate < getTodayStr()) {
+      toast.error('Expected registration date cannot be in the past.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const targetId = editSelectedPlotId !== 'lead_default' ? editSelectedPlotId : (editingPlot.id || (editingPlot as any)._id);
+      const targetPlot = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(targetId)) || editingPlot;
+
+      await plotService.update(targetId, {
+        ...targetPlot,
+        ...(activeTab === 'registered' ? { registrationDate: editDate } : { expectedRegistrationDate: editDate }),
+        bookedBy: {
+          ...targetPlot.bookedBy,
+          paymentStatus: editPaymentStatus,
+          loanStage: editLoanStage,
+          ...(activeTab === 'registered' ? {
+            bank: editBank.trim(),
+            bankFollowerName: editBankFollowerName.trim(),
+            bankFollowerPhone: editBankFollowerPhone.trim(),
+          } : {}),
+        },
+      } as any);
+
+      toast.success('Updated successfully');
+      setEditModalOpen(false);
+      setEditingPlot(null);
+
+      const resAll = await plotService.getAll({ limit: 500 }).catch(() => ({ data: [] }));
+      if (resAll.data) setAllPlots(resAll.data);
+      fetchPlots(page, { replace: true, showRefreshing: true });
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ── helpers ── */
+  const updateFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
+
+  const clearFilters = () => setFilters(DEFAULT_FILTERS);
+
+  const hasActiveFilters = committedFilters.projectFilter !== 'All' || committedFilters.paymentMethodFilter !== 'All' || committedFilters.paymentStatusFilter !== 'All' || committedFilters.bankFilter !== 'All' || committedFilters.bookedByFilter !== 'All' || committedFilters.loanStageFilter !== 'All' || committedFilters.sortBy !== 'newest' || !!committedFilters.dateFrom || !!committedFilters.dateTo;
+  const activeFilterCount = [committedFilters.projectFilter !== 'All', committedFilters.paymentMethodFilter !== 'All', committedFilters.paymentStatusFilter !== 'All', committedFilters.bankFilter !== 'All', committedFilters.bookedByFilter !== 'All', committedFilters.loanStageFilter !== 'All', committedFilters.sortBy !== 'newest', !!committedFilters.dateFrom, !!committedFilters.dateTo].filter(Boolean).length;
+
+  const goToPage = (p: number) => {
+    if (p < 1 || p > totalPages || p === page) return;
+    fetchPlots(p, { replace: true, showRefreshing: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const pageNumbers = useMemo(() => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (page > 3) pages.push('...');
+      for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
+      if (page < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
+    return pages;
+  }, [page, totalPages]);
+
+  const showDateFilters = true;
+
+  const getTomorrowStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split('T')[0];
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">{role === 'staff' ? 'My Registrations' : 'Registrations'}</h1>
+          <p className="text-sm text-slate-500 mt-0.5">{total} total plots</p>
+        </div>
+      </div>
+
+      {/* Tabs (admin only) */}
+      {role !== 'staff' && (
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+          {TABS.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-5 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === tab.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'upcoming' && role !== 'staff' && (
+        <p className="text-xs text-slate-400 -mt-3">
+          Plots that are booked with an expected registration date appear here.
+        </p>
+      )}
+
+      {/* Filter Bar */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 shadow-sm">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="relative w-full sm:w-80">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by customer name, mobile, or project..."
+              value={filters.search}
+              onChange={e => updateFilter('search', e.target.value)}
+              className="w-full h-10 pl-9 pr-8 border border-slate-200 rounded-lg text-sm focus:border-brand-green focus:ring-2 focus:ring-emerald-100 outline-none transition-all bg-white"
+            />
+            {refreshing && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                <div className="w-4 h-4 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+            {!refreshing && filters.search && (
+              <button onClick={() => updateFilter('search', '')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setFilterDrawerOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 bg-slate-50 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition-all cursor-pointer relative"
+              title="Open Side Filters Drawer"
+            >
+              <SlidersHorizontal size={14} className="text-brand-blue" />
+              <span>Filters</span>
+              {activeFilterCount > 0 && (
+                <span className="w-5 h-5 bg-brand-green text-white rounded-full text-[10px] font-extrabold flex items-center justify-center ml-1">
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
+
+            <ArrowUpDown size={14} className="text-slate-400 shrink-0 ml-1" />
+            <select
+              value={filters.sortBy}
+              onChange={e => updateFilter('sortBy', e.target.value as SortOption)}
+              className="h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none transition-all w-full sm:w-auto cursor-pointer"
+            >
+              {SORT_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap pt-2 border-t border-slate-100">
+          <select
+            value={filters.loanStageFilter}
+            onChange={e => updateFilter('loanStageFilter', e.target.value)}
+            className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-amber-50/60 text-amber-900 border-amber-200 focus:border-brand-green outline-none cursor-pointer"
+          >
+            <option value="All">All Loan Stages</option>
+            {LOAN_STAGES.filter(s => s !== 'All').map(stage => (
+              <option key={stage} value={stage}>{stage}</option>
+            ))}
+          </select>
+
+          <select
+            value={filters.projectFilter}
+            onChange={e => updateFilter('projectFilter', e.target.value)}
+            className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+          >
+            <option value="All">All Projects</option>
+            {allProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+
+          {/* Payment Status Filter */}
+          <select
+            value={filters.paymentStatusFilter}
+            onChange={e => updateFilter('paymentStatusFilter', e.target.value)}
+            className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+          >
+            <option value="All">All Payment Statuses</option>
+            <option value="Pending Payment">Not Fully Paid / Pending</option>
+            <option value="Fully Paid">Fully Paid</option>
+            <option value="Advance Paid">Advance Paid</option>
+            <option value="Partially Paid">Partially Paid</option>
+            <option value="Not Paid">Not Paid</option>
+          </select>
+
+          {/* Loan vs Ready Cash Filter */}
+          <select
+            value={filters.paymentMethodFilter}
+            onChange={e => {
+              const val = e.target.value;
+              setFilters(prev => ({
+                ...prev,
+                paymentMethodFilter: val,
+                ...(val !== 'LOAN' ? { bankFilter: 'All' } : {})
+              }));
+            }}
+            className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+          >
+            <option value="All">All Payment Methods</option>
+            <option value="LOAN">Bank Loan</option>
+            <option value="CASH">Ready Cash</option>
+          </select>
+
+          {/* Conditional Bank Filter when Payment Method is LOAN */}
+          {filters.paymentMethodFilter === 'LOAN' && (
+            <select
+              value={filters.bankFilter}
+              onChange={e => updateFilter('bankFilter', e.target.value)}
+              className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+            >
+              <option value="All">All Banks</option>
+              {allBanks.map(b => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Booked By filter — admin first, then staff */}
+          {allUsers.length > 0 && (
+            <select
+              value={filters.bookedByFilter}
+              onChange={e => updateFilter('bookedByFilter', e.target.value)}
+              className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+            >
+              <option value="All">All (Booked By)</option>
+              {allUsers.filter(u => u.role === 'admin').length > 0 && (
+                <optgroup label="── Admin ──">
+                  {allUsers.filter(u => u.role === 'admin').map(u => (
+                    <option key={u.id} value={u.name}>{u.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {allUsers.filter(u => u.role === 'staff').length > 0 && (
+                <optgroup label="── Staff ──">
+                  {allUsers.filter(u => u.role === 'staff').map(u => (
+                    <option key={u.id} value={u.name}>{u.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          )}
+
+          {showDateFilters && (
+            <>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                <span className="font-medium text-slate-400">From:</span>
+                <input
+                  type="date"
+                  value={filters.dateFrom}
+                  onChange={e => updateFilter('dateFrom', e.target.value)}
+                  className="bg-transparent text-xs text-slate-700 outline-none cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                <span className="font-medium text-slate-400">To:</span>
+                <input
+                  type="date"
+                  value={filters.dateTo}
+                  onChange={e => updateFilter('dateTo', e.target.value)}
+                  className="bg-transparent text-xs text-slate-700 outline-none cursor-pointer"
+                />
+              </div>
+            </>
+          )}
+
+          {hasActiveFilters && (
+            <button onClick={clearFilters} className="ml-auto flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-semibold transition-colors">
+              <X size={13} /> Clear Filters{activeFilterCount > 0 && ` (${activeFilterCount})`}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Content */}
+      {loading && plots.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="animate-pulse">
+            <div className="h-12 bg-slate-100 border-b border-slate-200" />
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4 px-4 py-4 border-b border-slate-100">
+                <div className="w-8 h-8 bg-slate-200 rounded-full" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-slate-200 rounded w-1/4" />
+                  <div className="h-3 bg-slate-100 rounded w-1/6" />
+                </div>
+                <div className="h-6 bg-slate-200 rounded w-16" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
+          <FileCheck size={40} className="mx-auto text-slate-300 mb-3" />
+          <p className="text-slate-500 text-sm font-medium">
+            {hasActiveFilters ? 'No records found matching filters' : activeTab === 'registered' ? 'No registered plots found' : 'No upcoming registrations found'}
+          </p>
+          {hasActiveFilters && (
+            <button onClick clearFilters={() => clearFilters()} className="text-xs text-brand-blue hover:underline mt-2 font-medium">Clear all filters</button>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Desktop Table */}
+          <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50/80 border-b border-slate-200">
+                  <tr>
+                    {(activeTab === 'registered' ?
+                      ['Customer & Contact', 'Property & Plot', 'Location & Source', 'Assigned To', 'Payment Method', 'Bank & Follower', 'Registration Date', 'Payment Status', 'Actions'] :
+                      ['Customer & Contact', 'Property & Plot', 'Location & Source', 'Assigned To', 'Payment Method', 'Bank & Follower', 'Expected Reg. Date', 'Payment Status', 'Actions']
+                    ).map(h => (
+                      <th key={h} className="text-left px-4 py-3.5 font-bold text-slate-600 text-xs uppercase tracking-wider whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filtered.map(plot => {
+                    const pid = plot.id || (plot as any)._id;
+                    const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || 'Customer';
+                    const custPhone = plot.bookedBy?.phone || (plot as any).leadInfo?.phone || '';
+                    const leadId = plot.bookedBy?.leadId || plot.bookedBy?.id || (plot as any).leadId || (plot as any).leadInfo?._id || pid;
+
+                    const custProjects = getCustomerProjects(custName, custPhone);
+                    const primaryProj = custProjects[0]?.project;
+
+                    const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id : plot.projectId;
+                    const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
+                    const projName = projObj ? projObj.name : '—';
+                    const projDisplayId = projObj ? (projObj.displayId || '') : '';
+                    const plotNum = plot.plotNumber || '—';
+
+                    const custBookedPlots = getCustomerBookedPlots(custName, custPhone);
+
+                    let extraCount = 0;
+                    let extraNames = '';
+                    if (activeTab === 'upcoming') {
+                      const otherBookedWithDate = custBookedPlots.filter(bp => {
+                        const bpId = bp.id || (bp as any)._id;
+                        return String(bpId) !== String(pid) && bp.expectedRegistrationDate;
+                      });
+                      extraCount = otherBookedWithDate.length;
+                      extraNames = otherBookedWithDate.map(bp => {
+                        const bpProjId = typeof bp.projectId === 'object' ? (bp.projectId as any)._id : bp.projectId;
+                        const bpProj = allProjects.find(pr => String(pr.id || pr._id) === String(bpProjId));
+                        return `${bpProj ? bpProj.name : 'Project'} — Plot #${bp.plotNumber}`;
+                      }).join(', ');
+                    } else {
+                      const otherProjects = custProjects.slice(1);
+                      extraCount = otherProjects.length;
+                      extraNames = otherProjects.map(p => `${p.project.name} [${p.project.displayId || ''}]`).join(', ');
+                    }
+
+                    const expDate = plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : '';
+                    const regDate = plot.registrationDate ? String(plot.registrationDate).split('T')[0] : '';
+                    const todayStr = getTodayStr();
+                    const isUpcomingPast = activeTab === 'upcoming' && !!expDate && expDate < todayStr;
+
+                    const matchedLead = getLeadForPlot(plot);
+                    const locationCity = matchedLead?.city || (plot as any).city || '—';
+                    const leadSourceType = matchedLead?.sourceType || (plot as any).sourceType;
+                    const leadSource = matchedLead?.source || (plot as any).source;
+                    const formattedSource = formatSource(leadSourceType, leadSource);
+                    const assignedToText = plot.assignedTo || (plot as any).assignedToName || matchedLead?.assignedToDisplayId || matchedLead?.assignedToName || '—';
+                    const daysPassedFromBooking = getDaysPassedFromBooking(plot, matchedLead);
+
+                    return (
+                      <tr key={pid} className={`transition-colors cursor-pointer group ${isUpcomingPast ? 'bg-rose-50/40 hover:bg-rose-50/80 border-l-4 border-l-rose-500' : 'hover:bg-slate-50/70'}`}>
+                        {/* 1. Customer & Contact */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          <div className="flex items-center gap-2.5">
+                            <Avatar initials={getInitials(custName)} size="sm" bg={getAvatarColor(custName)} />
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm"><NameTag name={custName} displayId={(plot as any).displayId || matchedLead?.displayId} /></span>
+                              <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium mt-0.5">
+                                <Phone size={11} className="text-slate-400" />
+                                <span>{custPhone || '—'}</span>
+                                {custPhone && (
+                                  <button
+                                    type="button"
+                                    onClick={e => { e.stopPropagation(); setWhatsAppCustomer({ phone: custPhone, name: custName }); }}
+                                    className="p-0.5 hover:bg-emerald-50 rounded text-emerald-600 transition-colors ml-1"
+                                    title="Chat on WhatsApp"
+                                  >
+                                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.003 5.291 5.3 0 11.799 0c3.148.001 6.108 1.228 8.334 3.457 2.227 2.229 3.452 5.19 3.45 8.34-.004 6.502-5.302 11.793-11.8 11.793a11.72 11.72 0 0 1-5.905-1.582L0 24zm6.549-3.791c1.472.873 2.924 1.34 4.703 1.341 5.485 0 9.948-4.457 9.951-9.94.002-2.656-1.03-5.153-2.905-7.03C16.48 2.705 13.987 1.666 11.797 1.667c-5.49 0-9.952 4.453-9.955 9.937-.001 1.83.483 3.61 1.4 5.161l-.979 3.57 3.655-.959c1.488.81 2.927 1.233 4.689 1.233zm11.302-7.608c-.307-.154-1.821-.899-2.101-.998-.28-.1-.484-.15-.688.156-.204.307-.79.99-.968 1.2-.178.209-.356.234-.664.08-1.124-.564-1.868-.93-2.613-2.204-.199-.34-.199-.546-.073-.728.115-.164.307-.356.462-.534.156-.178.208-.303.312-.507.105-.205.052-.385-.026-.539-.078-.154-.688-1.659-.942-2.27-.247-.595-.5-.515-.688-.525-.178-.009-.382-.01-.587-.01-.205 0-.539.077-.821.385-.282.307-1.078 1.053-1.078 2.569 0 1.516 1.102 2.985 1.256 3.19.154.205 2.169 3.312 5.254 4.643.734.317 1.307.506 1.754.648.74.235 1.414.201 1.947.122.593-.088 1.821-.745 2.076-1.463.254-.718.254-1.333.178-1.463-.076-.13-.28-.205-.588-.359z" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* 2. Property & Plot */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          <div className="flex flex-col gap-0.5 max-w-[210px]" title={`${projName} [${projDisplayId}]${extraNames ? ` (More: ${extraNames})` : ''}`}>
+                            <div className="flex items-center gap-1 text-slate-900 font-semibold text-xs truncate">
+                              <Building2 size={12} className="text-slate-400 shrink-0" />
+                              <span className="truncate"><NameTag name={projName} displayId={projDisplayId} /></span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium flex-wrap">
+                              <span className="flex items-center gap-1 font-bold text-slate-700">
+                                <Home size={10} className="text-slate-400" />
+                                Plot {plotNum}
+                              </span>
+                              {extraCount > 0 && (
+                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also in: ${extraNames}`}>
+                                  +{extraCount} more
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* 3. Location & Source */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          <div className="flex flex-col gap-0.5 max-w-[150px]">
+                            <div className="flex items-center gap-1 text-xs font-bold text-slate-800 truncate">
+                              <MapPin size={11} className="text-amber-500 shrink-0" />
+                              <span className="truncate">{locationCity}</span>
+                            </div>
+                            <span className="text-[11px] text-slate-500 font-medium truncate">{formattedSource}</span>
+                          </div>
+                        </td>
+
+                        {/* 4. Assigned To */}
+                        <td className="px-4 py-3.5 whitespace-nowrap text-xs font-semibold text-slate-700" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          {assignedToText}
+                        </td>
+
+                        {/* 5. Payment Method */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                            {plot.bookedBy?.paymentMethod || 'CASH'}
+                          </span>
+                        </td>
+
+                        {/* 6. Bank & Follower */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          {(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? (
+                            <div className="flex flex-col gap-0.5 max-w-[180px]">
+                              <span className="text-xs font-bold text-slate-900 truncate">{plot.bookedBy?.bank || 'No Bank'}</span>
+                              {plot.bookedBy?.bankFollowerName ? (
+                                <span className="text-[11px] text-slate-500 font-medium truncate">
+                                  {plot.bookedBy.bankFollowerName} {plot.bookedBy.bankFollowerPhone ? `(${plot.bookedBy.bankFollowerPhone})` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-slate-400 italic font-medium">No Bank Follower</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs font-semibold text-slate-400">—</span>
+                          )}
+                        </td>
+
+                        {/* 6. Expected / Registration Date */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          {activeTab === 'registered' ? (
+                            regDate ? (
+                              <span className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                                <Calendar size={12} className="text-slate-400" />
+                                {formatDate(regDate)}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-400 font-medium">--</span>
+                            )
+                          ) : (
+                            expDate ? (
+                              <div className="flex flex-col gap-0.5 items-start">
+                                <span className={`text-xs font-bold flex items-center gap-1 ${isUpcomingPast ? 'text-rose-700 font-extrabold' : 'text-slate-800'}`}>
+                                  {isUpcomingPast ? (
+                                    <AlertTriangle size={12} className="text-rose-600 shrink-0" />
+                                  ) : (
+                                    <Calendar size={12} className="text-slate-400" />
+                                  )}
+                                  {formatDate(expDate)}
+                                </span>
+                                {daysPassedFromBooking !== null && (
+                                  <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200/80 font-semibold px-1.5 py-0.5 rounded flex items-center gap-1 mt-0.5">
+                                    <Clock size={10} className="text-amber-600 shrink-0" /> {daysPassedFromBooking} {daysPassedFromBooking === 1 ? 'day' : 'days'} passed
+                                  </span>
+                                )}
+                                {isUpcomingPast && (
+                                  <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-200 font-extrabold px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1">
+                                    <Clock size={10} className="text-rose-600" /> Date Passed
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400 font-medium">--</span>
+                            )
+                          )}
+                        </td>
+
+                        {/* 7. Payment Status */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                          <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
+                        </td>
+
+                        {/* 8. Actions */}
+                        <td className="px-4 py-3.5 whitespace-nowrap">
+                          {activeTab === 'upcoming' ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setConfirmingRegPlot(plot);
+                                  setConfirmRegDate(plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : getTodayStr());
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-brand-green text-white rounded-md text-xs font-bold hover:bg-brand-darkgreen transition-all cursor-pointer shadow-xs"
+                              >
+                                <FileCheck size={12} /> Confirm Register
+                              </button>
+                              <button onClick={e => handleEditClick(e, plot)} className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer">
+                                <Pencil size={12} /> Edit
+                              </button>
+                            </div>
+                          ) : (
+                            plot.bookedBy?.paymentStatus !== 'Fully Paid' ? (
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setEditingPaymentPlot(plot);
+                                  setEditPaymentStatusVal(plot.bookedBy?.paymentStatus || 'Not Paid');
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-xs font-bold transition-all cursor-pointer shadow-xs"
+                                title="Update Payment Status"
+                              >
+                                <Pencil size={12} /> Edit Payment
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400 font-medium">—</span>
+                            )
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Mobile Cards */}
+          <div className="md:hidden space-y-3">
+            {filtered.map(plot => {
+              const pid = plot.id || (plot as any)._id;
+              const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || 'Customer';
+              const custPhone = plot.bookedBy?.phone || (plot as any).leadInfo?.phone || '';
+              const leadId = plot.bookedBy?.leadId || plot.bookedBy?.id || (plot as any).leadId || (plot as any).leadInfo?._id || pid;
+              const custProjects = getCustomerProjects(custName, custPhone);
+              const primaryProj = custProjects[0]?.project;
+
+              const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id : plot.projectId;
+              const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
+              const projName = projObj ? projObj.name : '—';
+              const projDisplayId = projObj ? (projObj.displayId || '') : '';
+              const plotNum = plot.plotNumber || '—';
+
+              let extraCount = 0;
+              if (activeTab === 'upcoming') {
+                const custBookedPlotsM = getCustomerBookedPlots(custName, custPhone);
+                extraCount = custBookedPlotsM.filter(bp => {
+                  const bpId = bp.id || (bp as any)._id;
+                  return String(bpId) !== String(pid) && bp.expectedRegistrationDate;
+                }).length;
+              } else {
+                extraCount = custProjects.length > 1 ? custProjects.length - 1 : 0;
+              }
+
+              const expDate = plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : '';
+              const regDate = plot.registrationDate ? String(plot.registrationDate).split('T')[0] : '';
+              const todayStr = getTodayStr();
+              const isUpcomingPastM = activeTab === 'upcoming' && !!expDate && expDate < todayStr;
+
+              const matchedLeadM = getLeadForPlot(plot);
+              const locationCityM = matchedLeadM?.city || (plot as any).city || '—';
+              const leadSourceTypeM = matchedLeadM?.sourceType || (plot as any).sourceType;
+              const leadSourceM = matchedLeadM?.source || (plot as any).source;
+              const formattedSourceM = formatSource(leadSourceTypeM, leadSourceM);
+              const assignedToTextM = plot.assignedTo || (plot as any).assignedToName || matchedLeadM?.assignedToDisplayId || matchedLeadM?.assignedToName || '—';
+              const daysPassedFromBookingM = getDaysPassedFromBooking(plot, matchedLeadM);
+
+              return (
+                <div key={pid} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer hover:border-blue-200 transition-all" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Avatar initials={getInitials(custName)} size="sm" bg={getAvatarColor(custName)} />
+                      <span className="text-sm font-bold text-slate-900"><NameTag name={custName} displayId={(plot as any).displayId || matchedLeadM?.displayId} /></span>
+                    </div>
+                    <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 mt-2">
+                    <div><span className="text-slate-400">Phone:</span> {custPhone || '—'}</div>
+                    <div className="flex items-center gap-1 min-w-0">
+                      <span className="text-slate-400">Project:</span>
+                      <span className="font-semibold text-slate-800 truncate">{projName}</span>
+                      {extraCount > 0 && <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1 py-0.5 rounded">+{extraCount}</span>}
+                    </div>
+                    <div><span className="text-slate-400">Plot #:</span> <span className="font-semibold text-slate-800">{plotNum}</span></div>
+                    <div><span className="text-slate-400">Assigned:</span> <span className="font-semibold text-slate-800">{assignedToTextM}</span></div>
+                    <div><span className="text-slate-400">City:</span> <span className="font-semibold text-slate-800">{locationCityM}</span></div>
+                    <div><span className="text-slate-400">Source:</span> <span className="font-semibold text-slate-800">{formattedSourceM}</span></div>
+                    {activeTab === 'registered' && (
+                      <>
+                        <div><span className="text-slate-400">Payment Method:</span> <span className="font-bold text-slate-800">{plot.bookedBy?.paymentMethod || 'CASH'}</span></div>
+                        <div><span className="text-slate-400">Bank:</span> <span className="font-semibold text-slate-800">{(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? (plot.bookedBy?.bank || 'No Bank') : '—'}</span></div>
+                        <div><span className="text-slate-400">Follower:</span> <span className="font-semibold text-slate-800">{(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? (plot.bookedBy?.bankFollowerName || 'No Bank Follower') : '—'}</span></div>
+                      </>
+                    )}
+                    {activeTab === 'upcoming' && daysPassedFromBookingM !== null && (
+                      <div className="col-span-2 text-xs">
+                        <span className="text-slate-400">Booking Age:</span>{' '}
+                        <span className="font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 text-[10px] inline-flex items-center gap-1">
+                          <Clock size={10} className="text-amber-600" /> {daysPassedFromBookingM} {daysPassedFromBookingM === 1 ? 'day' : 'days'} passed since booking
+                        </span>
+                      </div>
+                    )}
+                    <div className="col-span-2 flex items-center justify-between pt-2 border-t border-slate-100 mt-1">
+                      <span className="text-slate-400 flex items-center gap-1">
+                        {activeTab === 'registered' ? 'Registration Date:' : 'Expected Reg Date:'}
+                        {isUpcomingPastM && (
+                          <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-200 font-extrabold px-1.5 py-0.5 rounded flex items-center gap-1 ml-1">
+                            <AlertTriangle size={10} className="text-rose-600" /> Date Passed
+                          </span>
+                        )}
+                      </span>
+                      <span className={`font-bold ${isUpcomingPastM ? 'text-rose-700 font-extrabold' : 'text-slate-800'}`}>{formatDate(activeTab === 'registered' ? regDate : expDate)}</span>
+                    </div>
+                  </div>
+                  {activeTab === 'upcoming' ? (
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex justify-end gap-1.5">
+                      <button
+                        onClick={e => {
+                          e.stopPropagation();
+                          setConfirmingRegPlot(plot);
+                          setConfirmRegDate(plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : getTodayStr());
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-brand-green text-white rounded-md text-xs font-bold hover:bg-brand-darkgreen transition-all cursor-pointer shadow-xs"
+                      >
+                        <FileCheck size={12} /> Confirm Register
+                      </button>
+                      <button onClick={e => handleEditClick(e, plot)} className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer">
+                        <Pencil size={12} /> Edit
+                      </button>
+                    </div>
+                  ) : (
+                    plot.bookedBy?.paymentStatus !== 'Fully Paid' && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 flex justify-end gap-1.5">
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            setEditingPaymentPlot(plot);
+                            setEditPaymentStatusVal(plot.bookedBy?.paymentStatus || 'Not Paid');
+                          }}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-xs font-bold transition-all cursor-pointer shadow-xs"
+                        >
+                          <Pencil size={12} /> Edit Payment
+                        </button>
+                      </div>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 mt-6">
+              <button onClick={() => goToPage(page - 1)} disabled={page === 1} className="p-2 border border-slate-200 rounded-lg disabled:opacity-30 hover:bg-slate-50 transition-colors">
+                <ChevronLeft size={16} />
+              </button>
+              {pageNumbers.map((p, idx) => p === '...' ? (
+                <span key={`dots-${idx}`} className="px-2 py-2 text-sm text-slate-400">...</span>
+              ) : (
+                <button key={p} onClick={() => goToPage(p as number)} className={`min-w-[36px] px-3 py-2 rounded-lg text-sm font-semibold transition-all ${page === p ? 'bg-brand-green text-white shadow-sm' : 'border border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
+                  {p}
+                </button>
+              ))}
+              <button onClick={() => goToPage(page + 1)} disabled={page === totalPages} className="p-2 border border-slate-200 rounded-lg disabled:opacity-30 hover:bg-slate-50 transition-colors">
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Edit Modal */}
+      <Modal open={editModalOpen} onClose={() => { setEditModalOpen(false); setEditingPlot(null); }} title="Edit Registration">
+        <div className="space-y-4">
+          {editCustomerPlots.length > 0 && (
+            <div className="bg-blue-50/60 p-3 rounded-lg border border-blue-100">
+              <label className="block text-xs font-bold text-slate-800 mb-1">Select Booking / Plot to Edit</label>
+              <select
+                value={editSelectedPlotId}
+                onChange={e => handleSwitchEditBooking(e.target.value)}
+                className="w-full h-9 px-3 border border-slate-200 rounded-md text-xs font-semibold bg-white text-slate-800 outline-none focus:border-brand-green"
+              >
+                {editCustomerPlots.map(p => {
+                  const pProj = allProjects.find(pr => String(pr.id || pr._id) === String(typeof p.projectId === 'object' ? (p.projectId as any)._id : p.projectId));
+                  return (
+                    <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>
+                      {pProj ? pProj.name : 'Project'} - Plot #{p.plotNumber}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Payment Status</label>
+            <select value={editPaymentStatus} onChange={e => setEditPaymentStatus(e.target.value)} className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium">
+              <option value="Advance Paid">Advance Paid</option>
+              <option value="Advance Not Paid">Advance Not Paid</option>
+              <option value="Fully Paid">Fully Paid</option>
+              <option value="Partially Paid">Partially Paid</option>
+              <option value="Not Paid">Not Paid</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">
+              {activeTab === 'registered' ? 'Registration Date' : 'Expected Registration Date'}
+            </label>
+            <input
+              type="date"
+              min={activeTab === 'upcoming' ? getTodayStr() : undefined}
+              value={editDate}
+              onChange={e => setEditDate(e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+            />
+          </div>
+
+          {/* Bank & Follower Fields (Registered Tab & LOAN payment method Only) */}
+          {activeTab === 'registered' && (editingPlot?.bookedBy?.paymentMethod || 'CASH') === 'LOAN' && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>
+                <FollowerAutocomplete
+                  id="reg-follower-name"
+                  value={editBankFollowerName}
+                  onChange={setEditBankFollowerName}
+                  onSelect={opt => {
+                    setEditBankFollowerName(opt.name);
+                    if (opt.bank) setEditBank(opt.bank);
+                    if (opt.phone) setEditBankFollowerPhone(opt.phone);
+                  }}
+                  options={existingBankFollowers}
+                  placeholder="Select existing or type new follower name..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Mobile No</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={editBankFollowerPhone}
+                  onChange={e => setEditBankFollowerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="Enter 10-digit mobile number..."
+                  maxLength={10}
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Name</label>
+                <input
+                  type="text"
+                  list="reg-banks-list"
+                  value={editBank}
+                  onChange={e => handleBankChange(e.target.value)}
+                  placeholder="Select existing or type new bank name..."
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+                <datalist id="reg-banks-list">
+                  {existingBanks.map(b => (
+                    <option key={b} value={b} />
+                  ))}
+                </datalist>
+              </div>
+            </>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Loan Stage</label>
+            <select
+              value={editLoanStage}
+              onChange={e => setEditLoanStage(e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium cursor-pointer"
+            >
+              {LOAN_STAGES.filter(s => s !== 'All').map(stage => (
+                <option key={stage} value={stage}>{stage}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">
+              {activeTab === 'registered' ? 'Registration Date' : 'Expected Registration Date'}
+            </label>
+            <input
+              type="date"
+              min={activeTab === 'upcoming' ? getTodayStr() : undefined}
+              value={editDate}
+              onChange={e => setEditDate(e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+            />
+          </div>
+
+          {/* Bank & Follower Fields (Registered Tab & LOAN payment method Only) */}
+          {activeTab === 'registered' && (editingPlot?.bookedBy?.paymentMethod || 'CASH') === 'LOAN' && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>
+                <FollowerAutocomplete
+                  id="reg-follower-name"
+                  value={editBankFollowerName}
+                  onChange={setEditBankFollowerName}
+                  onSelect={opt => {
+                    setEditBankFollowerName(opt.name);
+                    if (opt.bank) setEditBank(opt.bank);
+                    if (opt.phone) setEditBankFollowerPhone(opt.phone);
+                  }}
+                  options={existingBankFollowers}
+                  placeholder="Select existing or type new follower name..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Mobile No</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={editBankFollowerPhone}
+                  onChange={e => setEditBankFollowerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="Enter 10-digit mobile number..."
+                  maxLength={10}
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Name</label>
+                <input
+                  type="text"
+                  list="reg-banks-list"
+                  value={editBank}
+                  onChange={e => handleBankChange(e.target.value)}
+                  placeholder="Select existing or type new bank name..."
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+                <datalist id="reg-banks-list">
+                  {existingBanks.map(b => (
+                    <option key={b} value={b} />
+                  ))}
+                </datalist>
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={() => { setEditModalOpen(false); setEditingPlot(null); }} className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
+            <button onClick={handleSaveEdit} disabled={saving} className="px-4 py-2 bg-brand-green text-white rounded-lg text-sm font-semibold hover:bg-brand-green/90 disabled:opacity-50 transition-colors">
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Payment Status Modal for Registered Tab */}
+      {editingPaymentPlot && (
+        <Modal
+          open={!!editingPaymentPlot}
+          onClose={() => setEditingPaymentPlot(null)}
+          title={`Update Payment Status — Plot #${editingPaymentPlot.plotNumber}`}
+          size="sm"
+        >
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              Customer: <strong className="text-slate-800">{editingPaymentPlot.bookedBy?.name || 'Customer'}</strong>
+            </p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Status <span className="text-red-500">*</span></label>
+              <select
+                value={editPaymentStatusVal}
+                onChange={e => setEditPaymentStatusVal(e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-semibold cursor-pointer"
+              >
+                <option value="Fully Paid">Fully Paid</option>
+                <option value="Partially Paid">Partially Paid</option>
+                <option value="Advance Paid">Advance Paid</option>
+                <option value="Not Paid">Not Paid</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setEditingPaymentPlot(null)}
+                disabled={savingPaymentStatus}
+                className="px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSavePaymentStatus}
+                disabled={savingPaymentStatus}
+                className="px-4 py-2 bg-brand-green text-white rounded-lg text-xs font-bold hover:bg-brand-darkgreen disabled:opacity-50"
+              >
+                {savingPaymentStatus ? 'Saving...' : 'Update Status'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Confirm Registration Modal for Upcoming Tab */}
+      {confirmingRegPlot && (
+        <Modal
+          open={!!confirmingRegPlot}
+          onClose={() => setConfirmingRegPlot(null)}
+          title={`Confirm Registration — Plot #${confirmingRegPlot.plotNumber}`}
+          size="sm"
+        >
+          <div className="space-y-4">
+            <p className="text-xs text-slate-600">
+              Customer: <strong className="text-slate-900 font-bold">{confirmingRegPlot.bookedBy?.name || 'Customer'}</strong>
+            </p>
+
+            {confirmingRegPlot.bookedBy?.paymentStatus !== 'Fully Paid' && (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-2">
+                <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Warning:</strong> Payment status for this plot is currently <strong>{confirmingRegPlot.bookedBy?.paymentStatus || 'Not Paid'}</strong>. You can select a registration date and proceed to confirm registration.
+                </span>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Registration Date <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={confirmRegDate}
+                onChange={e => setConfirmRegDate(e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setConfirmingRegPlot(null)}
+                disabled={submittingConfirmReg}
+                className="px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmRegisterPlot}
+                disabled={submittingConfirmReg}
+                className="px-4 py-2 bg-brand-green text-white rounded-lg text-xs font-bold hover:bg-brand-darkgreen disabled:opacity-50 transition-all shadow-xs"
+              >
+                {submittingConfirmReg ? 'Confirming...' : 'Confirm Registration'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Side Slide Filter Drawer */}
+      <Drawer open={filterDrawerOpen} onClose={() => setFilterDrawerOpen(false)} title="Filter Registrations">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Loan Stage</label>
+            <select
+              value={filters.loanStageFilter}
+              onChange={e => updateFilter('loanStageFilter', e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-amber-50/60 text-amber-900 border-amber-200 focus:border-brand-green outline-none cursor-pointer"
+            >
+              <option value="All">All Loan Stages</option>
+              {LOAN_STAGES.filter(s => s !== 'All').map(stage => (
+                <option key={stage} value={stage}>{stage}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Project</label>
+            <select
+              value={filters.projectFilter}
+              onChange={e => updateFilter('projectFilter', e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+            >
+              <option value="All">All Projects</option>
+              {allProjects.map(p => (
+                <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>{p.name} [{p.displayId}]</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Payment Method</label>
+            <select
+              value={filters.paymentMethodFilter}
+              onChange={e => {
+                const val = e.target.value;
+                setFilters(prev => ({
+                  ...prev,
+                  paymentMethodFilter: val,
+                  ...(val !== 'LOAN' ? { bankFilter: 'All' } : {})
+                }));
+              }}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+            >
+              <option value="All">All Payment Methods</option>
+              <option value="LOAN">Bank Loan</option>
+              <option value="CASH">Ready Cash</option>
+            </select>
+          </div>
+
+          {filters.paymentMethodFilter === 'LOAN' && (
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Bank Name</label>
+              <select
+                value={filters.bankFilter}
+                onChange={e => updateFilter('bankFilter', e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+              >
+                <option value="All">All Banks</option>
+                {allBanks.map(b => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {allUsers.length > 0 && (
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Booked By</label>
+              <select
+                value={filters.bookedByFilter}
+                onChange={e => updateFilter('bookedByFilter', e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
+              >
+                <option value="All">All (Booked By)</option>
+                {allUsers.filter(u => u.role === 'admin').length > 0 && (
+                  <optgroup label="── Admin ──">
+                    {allUsers.filter(u => u.role === 'admin').map(u => (
+                      <option key={u.id} value={u.name}>{u.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {allUsers.filter(u => u.role === 'staff').length > 0 && (
+                  <optgroup label="── Staff ──">
+                    {allUsers.filter(u => u.role === 'staff').map(u => (
+                      <option key={u.id} value={u.name}>{u.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Date Range (From)</label>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={e => updateFilter('dateFrom', e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs text-slate-700 outline-none cursor-pointer"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Date Range (To)</label>
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={e => updateFilter('dateTo', e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-xs text-slate-700 outline-none cursor-pointer"
+            />
+          </div>
+
+          <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="px-4 py-2 border border-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-50 transition-colors"
+            >
+              Clear All Filters
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterDrawerOpen(false)}
+              className="px-5 py-2 bg-brand-green text-white rounded-lg text-xs font-bold hover:bg-brand-green/90 transition-colors shadow-xs"
+            >
+              Apply Filters
+            </button>
+          </div>
+        </div>
+      </Drawer>
+
+      {whatsAppCustomer && (
+        <WhatsAppChatModal open={!!whatsAppCustomer} onClose={() => setWhatsAppCustomer(null)} phone={whatsAppCustomer.phone} name={whatsAppCustomer.name} />
+      )}
+    </div>
+  );
+}
