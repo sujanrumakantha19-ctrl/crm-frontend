@@ -6,6 +6,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
 import { Avatar } from '@/components/shared/Avatar';
 import { getInitials, getAvatarColor } from '@/data/mockData';
+import { useAuth } from '@/context/AuthContext';
 
 const PER_PAGE = 12;
 
@@ -45,6 +46,7 @@ type TabType = 'projects' | 'staff' | 'attendance' | 'channel-partner-performanc
 
 export default function AdminReports() {
   const { setExportInfo, triggerDownload } = useExportContext();
+  const { role } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('projects');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -296,9 +298,11 @@ export default function AdminReports() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-slate-900">Reports</h1>
-        <button onClick={triggerDownload} className="flex items-center gap-2 px-4 py-2 border border-slate-200 bg-white rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50">
-          <Download size={14} /> Export CSV
-        </button>
+        {role === 'admin' && (
+          <button onClick={triggerDownload} className="flex items-center gap-2 px-4 py-2 border border-slate-200 bg-white rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50">
+            <Download size={14} /> Export CSV
+          </button>
+        )}
       </div>
 
       {/* Summary Cards */}

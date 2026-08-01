@@ -9,6 +9,7 @@ import { SearchDropdown } from '@/components/shared/SearchDropdown';
 import { userService, attendanceService } from '@/services';
 import type { User as UserType } from '@/types';
 import { useExportContext } from '@/context/ExportContext';
+import { useAuth } from '@/context/AuthContext';
 import { TableSkeletonRows } from '@/components/shared/SkeletonLoader';
 import { toast } from 'sonner';
 import { parseDurationHours, matchesStatusFilter } from '@/utils/attendanceFilters';
@@ -17,6 +18,7 @@ export default function AdminAttendance() {
   const [staffUsers, setStaffUsers] = useState<UserType[]>([]);
   const [apiRecords, setApiRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const { role } = useAuth();
 
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -473,9 +475,11 @@ export default function AdminAttendance() {
               </button>
             </>
           )}
-          <button onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance', params: { tab: 'main', month: `${year}-${String(month).padStart(2, '0')}` } }); setTimeout(() => triggerDownload(), 50); }} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors ml-2">
-            <Download size={13} /> Export
-          </button>
+          {role === 'admin' && (
+            <button onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance', params: { tab: 'main', month: `${year}-${String(month).padStart(2, '0')}` } }); setTimeout(() => triggerDownload(), 50); }} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors ml-2">
+              <Download size={13} /> Export
+            </button>
+          )}
         </div>
       </div>
 
@@ -844,12 +848,14 @@ export default function AdminAttendance() {
                   placeholder="Filter Employee..."
                 />
               </div>
-              <button
-                onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance-details', params: { tab: 'details', month: `${year}-${String(month).padStart(2, '0')}`, ...(dailyModalDate ? { date: dailyModalDate } : {}) } }); setTimeout(() => triggerDownload(), 50); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold shadow-sm transition-all"
-              >
-                <Download size={14} /> Export CSV
-              </button>
+              {role === 'admin' && (
+                <button
+                  onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance-details', params: { tab: 'details', month: `${year}-${String(month).padStart(2, '0')}`, ...(dailyModalDate ? { date: dailyModalDate } : {}) } }); setTimeout(() => triggerDownload(), 50); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold shadow-sm transition-all"
+                >
+                  <Download size={14} /> Export CSV
+                </button>
+              )}
             </div>
 
             {/* Modal Stats Row showing Present and Absent */}

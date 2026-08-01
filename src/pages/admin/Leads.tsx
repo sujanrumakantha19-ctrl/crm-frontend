@@ -525,12 +525,14 @@ export default function AdminLeads() {
         >
           <Plus size={16} /><span className="hidden sm:inline ml-1.5">Add New Lead</span>
         </button>
-        <button
-          onClick={triggerDownload}
-          className="flex items-center justify-center w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-2 border border-slate-200 bg-white rounded-md text-sm text-slate-600 hover:bg-slate-50 transition-colors"
-        >
-          <Download size={14} /><span className="hidden sm:inline ml-1.5">Export CSV</span>
-        </button>
+        {role === 'admin' && (
+          <button
+            onClick={triggerDownload}
+            className="flex items-center justify-center w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-2 border border-slate-200 bg-white rounded-md text-sm text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            <Download size={14} /><span className="hidden sm:inline ml-1.5">Export CSV</span>
+          </button>
+        )}
       </div>
 
       {/* Tabs */}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef, type ReactNode, type Dispatch, type SetStateAction } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 
 export interface ExportInfo {
   endpoint: string;
@@ -46,9 +46,14 @@ const DEFAULT_PROGRESS: StreamProgress = {
 
 export function ExportProvider({ children }: { children: ReactNode }) {
   const [exportInfo, setExportInfo] = useState<ExportInfo | null>(null);
+  const exportInfoRef = useRef<ExportInfo | null>(null);
   const [downloadStatus, setDownloadStatus] = useState<DownloadStatus>('idle');
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [progress, setProgress] = useState<StreamProgress>(DEFAULT_PROGRESS);
+
+  useEffect(() => {
+    exportInfoRef.current = exportInfo;
+  }, [exportInfo]);
 
   // Tracks which route a page explicitly configured export info for. The
   // Topbar auto-map effect runs after page effects on mount, so it checks this
@@ -66,7 +71,8 @@ export function ExportProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const triggerDownload = useCallback(async () => {
-    if (!exportInfo) return;
+    const current = exportInfoRef.current;
+    if (!current) return;
 
     const token = localStorage.getItem('crm_token');
     if (!token) {
@@ -82,12 +88,12 @@ export function ExportProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const params = new URLSearchParams(exportInfo.params);
+    const params = new URLSearchParams(current.params);
     const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1';
-    const url = `${API_BASE}${exportInfo.endpoint}${params.toString() ? `?${params}` : ''}`;
+    const url = `${API_BASE}${current.endpoint}${params.toString() ? `?${params}` : ''}`;
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const fullFilename = `${exportInfo.filename}_${dateStr}.csv`;
+    const fullFilename = `${current.filename}_${dateStr}.csv`;
 
     setPopoverOpen(true);
     setDownloadStatus('downloading');

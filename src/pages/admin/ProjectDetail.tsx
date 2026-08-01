@@ -1109,17 +1109,19 @@ export default function AdminProjectDetail() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setExportInfo({ endpoint: '/export/project-detail', filename: 'project-detail', params: { id } });
-              setTimeout(() => triggerDownload(), 50);
-            }}
-            className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
-            title="Export all project, plot, booking and customer details"
-          >
-            <Download size={15} /> Export
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setExportInfo({ endpoint: '/export/project-detail', filename: 'project-detail', params: { id } });
+                setTimeout(() => triggerDownload(), 50);
+              }}
+              className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+              title="Export all project, plot, booking, customer and staff details"
+            >
+              <Download size={15} /> Export
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setShareLocationOpen(true)}
@@ -1276,42 +1278,6 @@ export default function AdminProjectDetail() {
 
       {activeTab === 'plotmap' && (
         <div className="space-y-6">
-          {/* Plot Layout Sketch Blueprint Section */}
-          {project.plotImages && project.plotImages.filter(Boolean).length > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <span>📐 Official Plot Layout Sketch & Survey Plan</span>
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">Approved technical 2D CAD land survey plan with plot numbers, road widths & dimensions</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { setLightboxIndex(0); setLightboxOpen(true); }}
-                  className="px-3 py-1.5 bg-blue-50 text-brand-blue text-xs font-semibold rounded-lg hover:bg-blue-100 transition-colors"
-                >
-                  Full Sketch View 🔍
-                </button>
-              </div>
-              <div
-                onClick={() => { setLightboxIndex(0); setLightboxOpen(true); }}
-                className="relative rounded-lg overflow-hidden border border-slate-200 max-h-[380px] bg-slate-900 flex items-center justify-center cursor-pointer group"
-              >
-                <img
-                  src={getFileUrl(project.plotImages[0])}
-                  alt="Plot Sketch Map"
-                  className="w-full h-full max-h-[380px] object-contain group-hover:scale-102 transition-transform duration-300"
-                />
-                <div className="absolute inset-0 bg-slate-900/10 group-hover:bg-slate-900/20 transition-colors flex items-center justify-center">
-                  <span className="bg-white/90 text-slate-900 text-xs font-bold px-3 py-1.5 rounded-full shadow-md backdrop-blur-xs opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all">
-                    Click to Zoom CAD Plot Sketch 🔍
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
           <div>
             <h3 className="text-sm font-bold text-slate-900 mb-3">Interactive Plot Availability Grid</h3>
             <div className="flex flex-wrap gap-4 mb-4">

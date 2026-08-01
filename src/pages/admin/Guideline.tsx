@@ -199,10 +199,6 @@ export default function AdminGuideline() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl sm:text-[28px] font-bold text-slate-900">Guideline</h1>
-        <p className="text-xs text-slate-500 mt-1">
-          Static cash &amp; loan calculation guideline. Results update instantly as you type.
-        </p>
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'cash' | 'loan')}>

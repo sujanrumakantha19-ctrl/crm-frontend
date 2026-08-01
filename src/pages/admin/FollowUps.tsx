@@ -252,12 +252,14 @@ export default function AdminFollowUps() {
             <option value="negative">Negative / Not Interested</option>
           </select>
 
-          <button
-            onClick={exportCSV}
-            className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 bg-white"
-          >
-            <Download size={14} /> Export CSV
-          </button>
+          {role === 'admin' && (
+            <button
+              onClick={exportCSV}
+              className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 bg-white"
+            >
+              <Download size={14} /> Export CSV
+            </button>
+          )}
         </div>
       </div>
 

@@ -57,7 +57,7 @@ const formatDate = (dateStr: string) => {
 
 export default function StaffReports() {
   const { setExportInfo, triggerDownload } = useExportContext();
-  const { userId, user } = useAuth();
+  const { userId, user, role } = useAuth();
 
   /* ── Tab state ── */
   const [activeTab, setActiveTab] = useState<TabType>('overview');
@@ -175,12 +175,13 @@ export default function StaffReports() {
   }, [fetchSummaryStats]);
 
   useEffect(() => {
+    if (role !== 'admin') return;
     setExportInfo({
       endpoint: '/export/reports',
       filename: 'staff-report',
       params: { tab: activeTab },
     });
-  }, [activeTab, setExportInfo]);
+  }, [activeTab, setExportInfo, role]);
 
   /* ── Tab Switch Handler ── */
   const handleTabSwitch = (tab: TabType) => {
@@ -460,9 +461,11 @@ export default function StaffReports() {
           <p className="text-xs text-slate-500 mt-0.5 font-medium">Your personal performance & activity overview</p>
         </div>
 
-        <button onClick={triggerDownload} className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 bg-white rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm transition-all self-start sm:self-auto">
-          <Download size={14} /> Export CSV
-        </button>
+        {role === 'admin' && (
+          <button onClick={triggerDownload} className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 bg-white rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm transition-all self-start sm:self-auto">
+            <Download size={14} /> Export CSV
+          </button>
+        )}
       </div>
 
       {/* Navigation Tabs */}

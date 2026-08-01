@@ -37,6 +37,7 @@ const pageTitles: Record<string, string> = {
   '/admin/channel-partners': 'Channel Partners',
   '/admin/reports': 'Reports',
   '/admin/about': 'About',
+  '/admin/guideline': 'Guideline',
   '/staff/dashboard': 'Dashboard',
   '/staff/my-leads': 'My Leads',
   '/staff/leads-pool': 'Open Leads Pool',
@@ -271,9 +272,14 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
       [`/partner/leads`]: { endpoint: '/export/leads', filename: 'my_leads' },
     };
 
-    const match = Object.entries(routeMap).find(([pattern]) =>
-      path === pattern || path.startsWith(pattern + '/')
-    );
+    const match = Object.entries(routeMap).find(([pattern]) => {
+      if (path === pattern) return true;
+      if (path.startsWith(pattern + '/')) {
+        if (pattern === `${rolePrefix}/projects`) return false;
+        return true;
+      }
+      return false;
+    });
 
     // A page (Leads/Reports/StaffReports) has already configured the export for
     // this route with its own filters — never clobber it with the route-map
@@ -454,7 +460,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
           )}
 
           {/* Stream Downloader Button & Popover Modal matching reference images */}
-          {exportInfo && (
+          {role === 'admin' && exportInfo && (
             <div ref={downloaderRef} className="relative">
               {/* Circular Download Icon Button matching Reference Image 1 */}
               <button
