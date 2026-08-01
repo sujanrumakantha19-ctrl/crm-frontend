@@ -13,6 +13,7 @@ import {
   UserCog,
   Handshake,
   BarChart3,
+  Calculator,
   HelpCircle,
   PlusCircle,
   type LucideIcon,
@@ -39,6 +40,7 @@ export const navConfig: Record<UserRole, NavItem[]> = {
     { label: 'Staff Management', icon: UserCog, path: '/admin/staff' },
     { label: 'Channel Partners', icon: Handshake, path: '/admin/channel-partners' },
     { label: 'Reports', icon: BarChart3, path: '/admin/reports' },
+    { label: 'Guideline', icon: Calculator, path: '/admin/guideline' },
     { label: 'About', icon: HelpCircle, path: '/admin/about' },
   ],
   staff: [

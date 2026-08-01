@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Cake, FileText, CheckCircle, ClipboardList, Clock, Home } from 'lucide-react';
+import { Bell, Cake, FileText, CheckCircle, ClipboardList, Clock, Home, MessageSquare } from 'lucide-react';
 import { useNotifications } from '@/context/NotificationContext';
 import { useAuth } from '@/context/AuthContext';
 
@@ -15,6 +15,7 @@ const iconMap: Record<string, { icon: typeof Bell; color: string; bg: string }> 
   lead_status: { icon: FileText, color: 'text-brand-blue', bg: 'bg-blue-100' },
   new_lead: { icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-100' },
   task_assigned: { icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-100' },
+  task_comment: { icon: MessageSquare, color: 'text-purple-600', bg: 'bg-purple-100' },
   attendance: { icon: Clock, color: 'text-slate-500', bg: 'bg-slate-100' },
   booking: { icon: Home, color: 'text-green-600', bg: 'bg-green-100' },
 };
@@ -63,6 +64,15 @@ export function NotificationPanel({ open, onClose, onViewAll }: NotificationPane
     onClose();
 
     const basePath = `/${role}`;
+    // Prefer an explicit deep-link provided by the notifier (issue 39)
+    if (n.link) {
+      if (n.link.startsWith('/')) {
+        navigate(n.link);
+      } else {
+        navigate(`${basePath}${n.link}`);
+      }
+      return;
+    }
     if (n.entityId && n.entityType) {
       if (n.entityType === 'Project') {
         if (n.entityId.includes(':')) {
@@ -82,7 +92,7 @@ export function NotificationPanel({ open, onClose, onViewAll }: NotificationPane
     } else {
       // Fallback navigation based on notification type
       switch (n.type) {
-        case 'task_assigned': navigate(`${basePath}/tasks${n.entityId ? `?taskId=${n.entityId}` : ''}`); break;
+        case 'task_assigned': case 'task_comment': navigate(`${basePath}/tasks${n.entityId ? `?taskId=${n.entityId}` : ''}`); break;
         case 'new_lead': case 'lead_status': navigate(`${basePath}/leads`); break;
         case 'booking': navigate(`${basePath}/projects`); break;
         case 'attendance': navigate(`${basePath}/attendance`); break;
@@ -129,6 +139,7 @@ export function NotificationPanel({ open, onClose, onViewAll }: NotificationPane
                 <Icon size={14} className={config.color} />
               </div>
               <div className="flex-1 min-w-0">
+                {n.title && <p className="text-sm font-semibold text-slate-800">{n.title}</p>}
                 <p className={`text-sm ${n.type === 'birthday' ? 'text-amber-800 font-medium' : 'text-slate-700'}`}>{n.message}</p>
                 <p className="text-xs text-slate-400 mt-0.5">{n.timeAgo}</p>
               </div>
@@ -155,6 +166,7 @@ export function NotificationPanel({ open, onClose, onViewAll }: NotificationPane
                 <Icon size={14} className={config.color} />
               </div>
               <div className="flex-1 min-w-0">
+                {n.title && <p className="text-sm font-semibold text-slate-800">{n.title}</p>}
                 <p className="text-sm text-slate-700">{n.message}</p>
                 <p className="text-xs text-slate-400 mt-0.5">{n.timeAgo}</p>
               </div>

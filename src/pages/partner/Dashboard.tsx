@@ -56,23 +56,27 @@ export default function PartnerDashboard() {
     projectService.getAll({ page: projectsPage, limit: itemsPerPage }).then(async (pRes) => {
       const projs: Project[] = pRes.data || [];
       const totalCount = pRes.total ?? (pRes as any).count ?? projs.length;
-      
-      // If server returned all items in mock or unpaginated response, slice for display
-      const activeProjs = projs.filter(p => p.isEnabled !== false && (!p.status || p.status.toLowerCase() === 'active' || p.status.toLowerCase() === 'upcoming'));
-      const sliced = activeProjs.length > itemsPerPage ? activeProjs.slice((projectsPage - 1) * itemsPerPage, projectsPage * itemsPerPage) : activeProjs;
 
-      setProjectsData(sliced);
+      setProjectsData(projs);
       setTotalProjects(totalCount);
 
-      const counts: Record<string, number> = {};
-      await Promise.allSettled(sliced.map(async p => {
-        const pid = p.id || (p as any)._id;
-        try {
-          const plotRes = await plotService.getAll({ projectId: pid, status: 'Available', limit: 100 });
-          counts[pid] = (plotRes.data || []).length;
-        } catch { counts[pid] = 0; }
-      }));
-      setAvailableCounts(prev => ({ ...prev, ...counts }));
+      // Fetch all available plots once and group by projectId client-side (avoids N+1)
+      try {
+        const plotRes = await plotService.getAll({ status: 'Available', limit: 500 });
+        const allAvailable = plotRes.data || [];
+        const counts: Record<string, number> = {};
+        projs.forEach(p => {
+          const pid = p.id || (p as any)._id;
+          counts[pid] = 0;
+        });
+        allAvailable.forEach(plot => {
+          const pId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id || (plot.projectId as any).id : plot.projectId;
+          if (counts[pId] !== undefined) counts[pId]++;
+        });
+        setAvailableCounts(prev => ({ ...counts, ...prev }));
+      } catch {
+        // counts remain at 0 if fetch fails
+      }
     }).catch(() => {});
   }, [projectsPage]);
 
@@ -87,9 +91,8 @@ export default function PartnerDashboard() {
     }).then(r => {
       const lds: Lead[] = r.data || [];
       const totalCount = r.total ?? (r as any).count ?? lds.length;
-      const sliced = lds.length > itemsPerPage ? lds.slice((leadsPage - 1) * itemsPerPage, leadsPage * itemsPerPage) : lds;
 
-      setLeadsData(sliced);
+      setLeadsData(lds);
       setTotalLeads(totalCount);
     }).catch(() => {});
   }, [user?.name, leadsPage]);

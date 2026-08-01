@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 interface ModalProps {
   open: boolean;
   onClose: () => void;
-  title?: string;
+  title?: ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | 'full';
   children: ReactNode;
   footer?: ReactNode;

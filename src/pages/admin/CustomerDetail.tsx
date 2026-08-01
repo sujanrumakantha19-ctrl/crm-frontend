@@ -10,9 +10,10 @@ import { leadService, projectService, plotService, taskService } from '@/service
 import { useAuth } from '@/context/AuthContext';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
-import { formatDate, formatSource, getTodayStr } from '@/lib/utils';
+import { formatDate, formatSource } from '@/lib/utils';
 import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
 import { FollowerAutocomplete } from '@/components/shared/FollowerAutocomplete';
+import type { Lead, Project, Plot } from '@/types';
 
 const LOAN_STAGES = [
   'Not Applied',
@@ -86,7 +87,7 @@ export default function AdminCustomerDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const isRegistrationsView = location.pathname.includes('/registrations');
-  const { role } = useAuth();
+  const { role, user } = useAuth();
   const [lead, setLead] = useState<Lead | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [allPlots, setAllPlots] = useState<Plot[]>([]);
@@ -187,35 +188,15 @@ export default function AdminCustomerDetail() {
           }
 
           if (!fetchedLead && matchingPlot.bookedBy) {
-            const b = matchingPlot.bookedBy;
-            const pProjId = typeof matchingPlot.projectId === 'object' ? (matchingPlot.projectId as any)._id : matchingPlot.projectId;
-            const projObj = (typeof matchingPlot.projectId === 'object' && (matchingPlot.projectId as any)?.name)
-              ? matchingPlot.projectId
-              : fetchedProjects.find((pr: any) => String(pr.id || pr._id) === String(pProjId));
-
-            fetchedLead = {
-              id: matchingPlot.id || (matchingPlot as any)._id,
-              _id: matchingPlot.id || (matchingPlot as any)._id,
-              customerName: b.name || 'Customer',
-              phone: b.phone || '',
-              email: b.email || '',
-              projectId: matchingPlot.projectId,
-              projectName: projObj?.name || '',
-              plotId: matchingPlot.id || (matchingPlot as any)._id,
-              plotNumber: String(matchingPlot.plotNumber),
-              status: matchingPlot.status === 'Registered' ? 'Registered' : 'Booked',
-              paymentStatus: b.paymentStatus || 'Not Paid',
-              paymentMethod: b.paymentMethod || 'CASH',
-              bank: b.bank || '',
-              bankFollowerName: b.bankFollowerName || '',
-              bankFollowerPhone: b.bankFollowerPhone || '',
-              expectedRegistrationDate: matchingPlot.expectedRegistrationDate,
-              registrationDate: matchingPlot.registrationDate,
-              city: (matchingPlot as any).city || '',
-              assignedToName: (matchingPlot as any).assignedTo || b.assignedTo || '',
-              source: 'Direct Booking',
-              sourceType: 'Plot Map',
-            } as any;
+            // Try to find lead by phone from the already-fetched list
+            const phoneClean = matchingPlot.bookedBy.phone.replace(/\D/g, '').slice(-10);
+            const matchedLead = fetchedPlots.find((l: any) =>
+              l.phone && l.phone.replace(/\D/g, '').slice(-10) === phoneClean
+            );
+            if (matchedLead) fetchedLead = matchedLead as Lead;
+            // Intentionally do NOT fabricate a lead from plot data: a fake lead
+            // with a plot ID as its lead ID and plot statuses as lead statuses
+            // would cause API failures on any subsequent lead operation.
           }
         }
       }
@@ -441,11 +422,6 @@ export default function AdminCustomerDetail() {
         toast.error('Please enter a valid 10-digit mobile number starting with 6-9 for Bank Follower.');
         return;
       }
-    }
-
-    if (editExpectedRegistrationDate && editExpectedRegistrationDate < getTodayStr()) {
-      toast.error('Expected Registration Date cannot be in the past');
-      return;
     }
 
     setSaving(true);
@@ -800,8 +776,6 @@ export default function AdminCustomerDetail() {
       setSavingFollowUp(false);
     }
   };
-
-  if (loading) return <DetailSkeletonPage />;
 
   if (!lead) {
     return (
@@ -1342,7 +1316,6 @@ export default function AdminCustomerDetail() {
               <label className="block text-xs font-semibold text-slate-500 mb-1">Expected Registration Date</label>
               <input
                 type="date"
-                min={getTodayStr()}
                 value={editExpectedRegistrationDate}
                 onChange={e => setEditExpectedRegistrationDate(e.target.value)}
                 className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none"

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { CheckCircle, User, Phone, Mail, MapPin, Home, Building2, FileText, Send, RotateCcw, AlertTriangle, X, Calendar } from 'lucide-react';
 import { toast } from 'sonner';
 import { projectService, leadService } from '@/services';
+import type { CheckPhoneLead } from '@/services/leads';
 import { useAuth } from '@/context/AuthContext';
 import type { Project } from '@/types';
 
@@ -28,7 +29,7 @@ export default function PartnerAddLead() {
   const [notes, setNotes] = useState('');
 
   // Duplicate phone state
-  const [duplicateLead, setDuplicateLead] = useState<{ id: string; customerName: string; phone: string; status: string; assignedToName: string } | null>(null);
+  const [duplicateLead, setDuplicateLead] = useState<CheckPhoneLead | null>(null);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const lastCheckedPhoneRef = useRef<string>('');
 

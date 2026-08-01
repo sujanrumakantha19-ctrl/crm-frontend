@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 
 export interface ExportInfo {
   endpoint: string;
@@ -22,10 +22,12 @@ export interface StreamProgress {
 interface ExportContextType {
   exportInfo: ExportInfo | null;
   setExportInfo: (info: ExportInfo | null) => void;
+  hasPageOverride: (path: string) => boolean;
   downloadStatus: DownloadStatus;
   setDownloadStatus: (s: DownloadStatus) => void;
   triggerDownload: () => void;
   progress: StreamProgress;
+  setProgress: Dispatch<SetStateAction<StreamProgress>>;
   popoverOpen: boolean;
   setPopoverOpen: (open: boolean) => void;
 }
@@ -48,15 +50,41 @@ export function ExportProvider({ children }: { children: ReactNode }) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [progress, setProgress] = useState<StreamProgress>(DEFAULT_PROGRESS);
 
+  // Tracks which route a page explicitly configured export info for. The
+  // Topbar auto-map effect runs after page effects on mount, so it checks this
+  // ref (updated synchronously) to avoid clobbering page-provided configs
+  // (e.g. Leads.tsx status, Reports.tsx tab, StaffReports.tsx tab).
+  const pageOverridePathRef = useRef<string | null>(null);
+
+  const setExportInfoSafe = useCallback((info: ExportInfo | null) => {
+    pageOverridePathRef.current = info ? window.location.pathname : null;
+    setExportInfo(info);
+  }, []);
+
+  const hasPageOverride = useCallback((path: string) => {
+    return pageOverridePathRef.current === path;
+  }, []);
+
   const triggerDownload = useCallback(async () => {
     if (!exportInfo) return;
 
     const token = localStorage.getItem('crm_token');
-    if (!token) return;
+    if (!token) {
+      setPopoverOpen(true);
+      setProgress(prev => ({
+        ...prev,
+        status: 'error',
+        errorMessage: 'You are not authenticated. Please log in and try again.',
+        speed: 'Error',
+        eta: 'Failed',
+      }));
+      setDownloadStatus('idle');
+      return;
+    }
 
-    const params = new URLSearchParams({ token, ...exportInfo.params });
+    const params = new URLSearchParams(exportInfo.params);
     const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1';
-    const url = `${API_BASE}${exportInfo.endpoint}?${params}`;
+    const url = `${API_BASE}${exportInfo.endpoint}${params.toString() ? `?${params}` : ''}`;
 
     const dateStr = new Date().toISOString().split('T')[0];
     const fullFilename = `${exportInfo.filename}_${dateStr}.csv`;
@@ -74,11 +102,18 @@ export function ExportProvider({ children }: { children: ReactNode }) {
     });
 
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.status === 401) {
+        localStorage.removeItem('crm_token');
+        window.dispatchEvent(new Event('auth:unauthorized'));
+        throw new Error('Export failed: authentication expired. Please log in again.');
+      }
       if (!response.ok) throw new Error(`Export failed with status ${response.status}`);
 
       const contentLengthHeader = response.headers.get('Content-Length');
-      const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+      const totalBytes = contentLengthHeader ? Math.max(0, parseInt(contentLengthHeader, 10)) || 0 : 0;
 
       if (!response.body) throw new Error('ReadableStream not supported by browser response.');
 
@@ -126,7 +161,7 @@ export function ExportProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      const blob = new Blob(chunks as BlobPart[], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob(chunks as BlobPart[], { type: 'text/csv;charset=utf-8' });
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = blobUrl;
@@ -163,11 +198,13 @@ export function ExportProvider({ children }: { children: ReactNode }) {
     <ExportContext.Provider
       value={{
         exportInfo,
-        setExportInfo,
+        setExportInfo: setExportInfoSafe,
+        hasPageOverride,
         downloadStatus,
         setDownloadStatus,
         triggerDownload,
         progress,
+        setProgress,
         popoverOpen,
         setPopoverOpen,
       }}

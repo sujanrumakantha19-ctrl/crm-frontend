@@ -27,7 +27,7 @@ export interface SendWhatsAppPayload {
 
 export const whatsappService = {
   send(payload: SendWhatsAppPayload) {
-    return api.post<{ success: boolean; data: WhatsAppMessageData }>('/whatsapp/send', payload);
+    return api.post<WhatsAppMessageData>('/whatsapp/send', payload);
   },
   getHistory(phone: string) {
     return api.get<WhatsAppMessageData[]>(`/whatsapp/history/${phone}`);

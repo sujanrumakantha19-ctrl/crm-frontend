@@ -1,14 +1,15 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Bell, Menu, Cake, FileText, CheckCircle, ClipboardList, Clock, Home, Search, KeyRound, Camera, AlertCircle, FileDown, Loader2, Download, X, Inbox } from 'lucide-react';
+import { Bell, Menu, Cake, FileText, CheckCircle, ClipboardList, Clock, Home, Search, KeyRound, Camera, AlertCircle, FileDown, Loader2, Download, X, Inbox, MessageSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useNotifications } from '@/context/NotificationContext';
 import { useAuth } from '@/context/AuthContext';
 import { authService } from '@/services/auth';
+import { toast } from 'sonner';
 import { NotificationPanel } from './NotificationPanel';
 import { UserDropdown } from './UserDropdown';
 import { Avatar } from '@/components/shared/Avatar';
 import { NameTag } from '@/components/shared/NameTag';
-import type { UserRole } from '@/types';
+import type { UserRole, User } from '@/types';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { Modal } from '@/components/shared/Modal';
 import { getFileUrl } from '@/lib/api';
@@ -46,7 +47,6 @@ const pageTitles: Record<string, string> = {
   '/partner/projects': 'Projects',
   '/partner/leads': 'My Leads',
   '/partner/add-lead': 'Add New Lead',
-  '/partner/attendance': 'Attendance',
   '/partner/profile': 'My Profile',
 };
 
@@ -65,6 +65,15 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     setAllNotifOpen(false);
 
     const basePath = `/${role}`;
+    // Prefer an explicit deep-link provided by the notifier (issue 39)
+    if (n.link) {
+      if (n.link.startsWith('/')) {
+        navigate(n.link);
+      } else {
+        navigate(`${basePath}${n.link}`);
+      }
+      return;
+    }
     if (n.entityId && n.entityType) {
       if (n.entityType === 'Project') {
         if (n.entityId.includes(':')) {
@@ -84,7 +93,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     } else {
       // Fallback navigation based on notification type
       switch (n.type) {
-        case 'task_assigned': navigate(`${basePath}/tasks${n.entityId ? `?taskId=${n.entityId}` : ''}`); break;
+        case 'task_assigned': case 'task_comment': navigate(`${basePath}/tasks${n.entityId ? `?taskId=${n.entityId}` : ''}`); break;
         case 'new_lead': case 'lead_status': navigate(`${basePath}/leads`); break;
         case 'booking': navigate(`${basePath}/projects`); break;
         case 'attendance': navigate(`${basePath}/attendance`); break;
@@ -117,7 +126,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
   const [editDob, setEditDob] = useState('');
 
   const [workingTimeStr, setWorkingTimeStr] = useState<string>('');
-  const { exportInfo, setExportInfo, downloadStatus, triggerDownload, progress, popoverOpen, setPopoverOpen } = useExportContext();
+  const { exportInfo, setExportInfo, hasPageOverride, downloadStatus, triggerDownload, progress, setProgress, popoverOpen, setPopoverOpen } = useExportContext();
 
   const formatBytes = (bytes: number): string => {
     if (!bytes || bytes === 0) return '0 KB';
@@ -190,6 +199,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     lead_status: { icon: FileText, color: 'text-brand-blue', bg: 'bg-blue-50 border-blue-100', label: 'Lead Status' },
     new_lead: { icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-50 border-green-100', label: 'New Lead' },
     task_assigned: { icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-50 border-purple-100', label: 'Task Assigned' },
+    task_comment: { icon: MessageSquare, color: 'text-purple-600', bg: 'bg-purple-50 border-purple-100', label: 'Task Comment' },
     attendance: { icon: Clock, color: 'text-slate-500', bg: 'bg-slate-50 border-slate-100', label: 'Attendance' },
     booking: { icon: Home, color: 'text-green-600', bg: 'bg-green-50 border-green-100', label: 'Plot Booking' },
   };
@@ -250,7 +260,11 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
       [`${rolePrefix}/channel-partners`]: { endpoint: '/export/channel-partners', filename: 'channel_partners' },
       [`${rolePrefix}/reports`]: { endpoint: '/export/reports', filename: 'report' },
       [`/staff/my-leads`]: (p) => {
-        const userData = JSON.parse(localStorage.getItem('crm_user') || '{}');
+        let userData: Record<string, any> = {};
+        try {
+          const raw = localStorage.getItem('crm_user');
+          if (raw) userData = JSON.parse(raw);
+        } catch { /* ignore malformed JSON */ }
         return { endpoint: '/export/leads', filename: 'my_leads', params: { assignedTo: userData.id || '' } };
       },
       [`/staff/reports`]: { endpoint: '/export/reports', filename: 'staff-report' },
@@ -260,6 +274,13 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     const match = Object.entries(routeMap).find(([pattern]) =>
       path === pattern || path.startsWith(pattern + '/')
     );
+
+    // A page (Leads/Reports/StaffReports) has already configured the export for
+    // this route with its own filters — never clobber it with the route-map
+    // default (the page effect runs before this one on mount).
+    if (hasPageOverride(path)) {
+      return;
+    }
 
     if (match) {
       const [, configOrFn] = match;
@@ -271,7 +292,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     }
     // Default fallback so download button is always present on ALL pages (Dashboard, Profile, etc.)
     setExportInfo({ endpoint: '/export/leads', filename: 'backup_data' });
-  }, [location.pathname, role, setExportInfo]);
+  }, [location.pathname, role, setExportInfo, hasPageOverride]);
 
   useEffect(() => {
     if (profileOpen) {
@@ -515,6 +536,27 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
                         </div>
                       </div>
                     </div>
+                  ) : progress.status === 'error' ? (
+                    /* Error State matching the same popover card style */
+                    <div className="py-6 px-4 flex flex-col items-center justify-center text-center">
+                      <div className="w-12 h-12 rounded-2xl bg-red-50 border border-red-100 flex items-center justify-center text-red-500 mb-3 shadow-inner">
+                        <AlertCircle size={24} />
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-700 tracking-tight">Export Failed</h4>
+                      <p className="text-xs text-red-500 max-w-[240px] mt-1 leading-relaxed">
+                        {progress.errorMessage || 'Something went wrong while streaming the export.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProgress({ ...progress, status: 'idle', errorMessage: undefined });
+                          setPopoverOpen(false);
+                        }}
+                        className="mt-4 text-xs font-bold text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   ) : (
                     /* Clean Empty State matching Reference Image 2 */
                     <div className="py-6 px-4 flex flex-col items-center justify-center text-center">
@@ -757,6 +799,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
                             n.type === 'new_lead' ? 'bg-green-50 text-green-700 border border-green-100' :
                             n.type === 'lead_status' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
                             n.type === 'task_assigned' ? 'bg-purple-50 text-purple-700 border border-purple-100' :
+                            n.type === 'task_comment' ? 'bg-purple-50 text-purple-700 border border-purple-100' :
                             n.type === 'booking' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
                             'bg-slate-50 text-slate-700 border border-slate-150'
                           }`}>
@@ -767,6 +810,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
                             <span className="w-2 h-2 rounded-full bg-brand-green animate-pulse shrink-0" title="Unread" />
                           )}
                         </div>
+                        {n.title && <p className="text-xs font-semibold text-slate-700 mt-1.5">{n.title}</p>}
                         <p className={`text-xs mt-1.5 leading-relaxed ${!n.isRead ? 'text-slate-900 font-semibold' : 'text-slate-500'}`}>
                           {n.message}
                         </p>

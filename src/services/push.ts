@@ -5,11 +5,22 @@ import { authService } from './auth';
 let isRegistered = false;
 let pushToken: string | null = null;
 
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 export const pushService = {
   async initializePush(navigate: (path: string) => void) {
-    // Only initialize if running on native mobile device (Android/iOS)
+    // Web platform: use the browser Push API (service worker). Native devices
+    // continue to use Capacitor Push Notifications below.
     if (!Capacitor.isNativePlatform()) {
-      console.log('Push: Not running on a native platform. Skipping initialization.');
+      await pushService.initializeWebPush(navigate);
       return;
     }
 
@@ -97,6 +108,58 @@ export const pushService = {
     }
   },
 
+  async initializeWebPush(navigate: (path: string) => void) {
+    if (
+      typeof window === 'undefined' ||
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window) ||
+      !('Notification' in window)
+    ) {
+      console.log('Push: Web Push API not supported in this browser. Skipping.');
+      return;
+    }
+
+    const vapidKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY as string) || '';
+    if (!vapidKey) {
+      console.log('Push: VITE_VAPID_PUBLIC_KEY not configured. Web push disabled.');
+      return;
+    }
+
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+
+      // Route notification clicks back to the app so navigation uses the stored role.
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        const msg = event.data;
+        if (msg && msg.type === 'NOTIFICATION_CLICK') {
+          pushService.handleNavigation(msg.data, navigate);
+        }
+      });
+
+      if (Notification.permission !== 'granted') {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') {
+          console.warn('Push: Web notification permission not granted.');
+          return;
+        }
+      }
+
+      const existing = await reg.pushManager.getSubscription();
+      const sub = existing || await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey) as BufferSource,
+      });
+
+      pushToken = sub.endpoint.split('/').filter(Boolean).pop() || sub.endpoint;
+      await authService.savePushToken(pushToken, 'web');
+      isRegistered = true;
+      console.log('Push: Web push registered successfully.');
+    } catch (err) {
+      console.error('Push: Failed to initialize web push:', err);
+    }
+  },
+
   handleNavigation(notification: PushNotificationSchema, navigate: (path: string) => void) {
     const data = notification.data || {};
     const entityId = data.entityId;
@@ -158,18 +221,37 @@ export const pushService = {
   },
 
   async cleanupPush() {
-    if (!Capacitor.isNativePlatform()) return;
+    if (Capacitor.isNativePlatform()) {
+      try {
+        if (isRegistered && pushToken) {
+          await authService.removePushToken(pushToken);
+          console.log('Push: Token removed from backend.');
+        }
+        await PushNotifications.removeAllListeners();
+        isRegistered = false;
+        pushToken = null;
+        console.log('Push: Cleaned up push notifications.');
+      } catch (err) {
+        console.error('Push: Error during cleanup:', err);
+      }
+      return;
+    }
+
+    // Web: unsubscribe from the push subscription and remove the stored token.
     try {
+      if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+        const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (sub) await sub.unsubscribe();
+      }
       if (isRegistered && pushToken) {
         await authService.removePushToken(pushToken);
-        console.log('Push: Token removed from backend.');
       }
-      await PushNotifications.removeAllListeners();
       isRegistered = false;
       pushToken = null;
-      console.log('Push: Cleaned up push notifications.');
+      console.log('Push: Cleaned up web push.');
     } catch (err) {
-      console.error('Push: Error during cleanup:', err);
+      console.error('Push: Error during web cleanup:', err);
     }
   }
 };

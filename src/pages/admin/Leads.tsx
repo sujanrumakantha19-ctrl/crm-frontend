@@ -13,6 +13,7 @@ import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
 import { leadService, userService, projectService, channelPartnerService } from '@/services';
+import type { CheckPhoneLead } from '@/services/leads';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import type { LeadStatus, Lead, User, Project } from '@/types';
 import { Empty, EmptyTitle, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
@@ -94,7 +95,7 @@ export default function AdminLeads() {
   // Filtered leads calculation
   const filtered = useMemo(() => {
     return leadList.filter(l => {
-      const hasAssignee = !!(l.assignedTo && l.assignedTo !== 'undefined');
+      const hasAssignee = !!(l.assignedTo && l.assignedTo !== undefined && l.assignedTo !== null);
       let matchesTab = false;
       if (activeTab === 'All') {
         matchesTab = true;
@@ -113,7 +114,7 @@ export default function AdminLeads() {
   const tabCount = (key: string) => {
     return leadList.filter(l => {
       if (key === 'All') return true;
-      const hasAssignee = !!(l.assignedTo && l.assignedTo !== 'undefined');
+      const hasAssignee = !!(l.assignedTo && l.assignedTo !== undefined && l.assignedTo !== null);
       if (key === 'Open') return l.status === 'Open' && !hasAssignee;
       if (key === 'Reserved') return l.status === 'Open' && hasAssignee;
       return l.status === key;
@@ -200,9 +201,12 @@ export default function AdminLeads() {
     setExportInfo({
       endpoint: '/export/leads',
       filename: 'leads',
-      params: { status: activeTab },
+      params: {
+        status: activeTab,
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      },
     });
-  }, [activeTab, setExportInfo]);
+  }, [activeTab, debouncedSearch, setExportInfo]);
 
   // Modals state
   const [assignLead, setAssignLead] = useState<any | null>(null);
@@ -229,7 +233,7 @@ export default function AdminLeads() {
   const [cCategory, setCCategory] = useState('');
 
   // Duplicate phone state
-  const [duplicateLead, setDuplicateLead] = useState<{ id: string; displayId?: string; phone: string; status: string; assignedToName?: string; assignedToDisplayId?: string } | null>(null);
+  const [duplicateLead, setDuplicateLead] = useState<CheckPhoneLead | null>(null);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const lastCheckedPhoneRef = useRef<string>('');
 
@@ -382,8 +386,6 @@ export default function AdminLeads() {
       city: cCity,
       gender: cGender,
       dob: cDob,
-      budgetMin: 500000,
-      budgetMax: 2000000,
       budget: cBudget.trim() || undefined,
       category: cCategory || undefined,
       propertyInterest: project ? project.category || 'Open Plots' : (cCategory || 'General Interest'),

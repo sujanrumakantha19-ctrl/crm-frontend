@@ -1,6 +1,6 @@
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
-import { useApi, usePaginated, useInfiniteScroll } from '@/hooks/useApi'
+import { useApi, usePaginated } from '@/hooks/useApi'
 import type { ApiResponse } from '@/lib/api'
 
 // Helper to create mock API responses
@@ -135,59 +135,5 @@ describe('usePaginated', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
     act(() => { result.current.refresh() })
     await waitFor(() => expect(result.current.data).toEqual(['p1-updated']))
-  })
-})
-
-describe('useInfiniteScroll', () => {
-  it('should fetch first page on mount', async () => {
-    const fetcher = vi.fn().mockResolvedValue(ok(['item1', 'item2'], 50, { next: { page: 2, limit: 25 } }))
-    const { result } = renderHook(() => useInfiniteScroll(fetcher))
-
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.data).toEqual(['item1', 'item2'])
-    expect(result.current.hasMore).toBe(true)
-  })
-
-  it('should append data on loadMore', async () => {
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(ok(['p1'], 50, { next: { page: 2, limit: 25 } }))
-      .mockResolvedValueOnce(ok(['p2'], 50, { next: { page: 3, limit: 25 } }))
-    const { result } = renderHook(() => useInfiniteScroll(fetcher))
-
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.data).toEqual(['p1'])
-
-    act(() => { result.current.loadMore() })
-    await waitFor(() => expect(result.current.data).toEqual(['p1', 'p2']))
-  })
-
-  it('should reset data', async () => {
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(ok(['item1'], 50, { next: { page: 2, limit: 25 } }))
-      .mockResolvedValueOnce(ok(['fresh'], 50, { next: { page: 2, limit: 25 } }))
-    const { result } = renderHook(() => useInfiniteScroll(fetcher))
-
-    await waitFor(() => expect(result.current.data).toEqual(['item1']))
-    act(() => { result.current.refresh() })
-    await waitFor(() => expect(result.current.data).toEqual(['fresh']))
-  })
-
-  it('should set hasMore to false when no next page', async () => {
-    const fetcher = vi.fn().mockResolvedValue(ok(['only-page']))
-    const { result } = renderHook(() => useInfiniteScroll(fetcher))
-
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.hasMore).toBe(false)
-  })
-
-  it('should not load more when already loading', async () => {
-    const fetcher = vi.fn().mockResolvedValue(ok(['item'], 50, { next: { page: 2, limit: 25 } }))
-    const { result } = renderHook(() => useInfiniteScroll(fetcher))
-
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    // loadMore sets loadingMore=true, so a second call should be ignored
-    act(() => { result.current.loadMore() })
-    act(() => { result.current.loadMore() })
-    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
   })
 })

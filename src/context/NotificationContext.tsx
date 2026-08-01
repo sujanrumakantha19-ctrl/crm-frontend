@@ -49,18 +49,43 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const pageRef = useRef(1);
   const LIMIT = 50;
 
-  useEffect(() => {
+  const fetchNotifications = useCallback(async () => {
     const token = localStorage.getItem('crm_token');
     if (!token) return;
-    pageRef.current = 1;
-    notificationService.getAll({ limit: LIMIT, sort: '-createdAt' })
-      .then(r => {
-        const items = (r.data || []).map(formatNotif);
-        setNotifications(items);
-        setHasMore((r.data?.length ?? 0) >= LIMIT);
-      })
-      .catch(err => console.warn('Failed to load notifications:', err));
+    try {
+      const r = await notificationService.getAll({ limit: LIMIT, sort: '-createdAt' });
+      const items = (r.data || []).map(formatNotif);
+      setNotifications(prev => {
+        // Merge: keep optimistic `notif-` entries only until their server-persisted
+        // twin arrives (matched by content), then drop them to avoid duplicates.
+        const serverIds = new Set(items.map(n => n.id));
+        const serverByContent = items.map(s => ({ type: s.type, message: s.message, entityId: s.entityId }));
+        const matchesServer = (n: any) =>
+          serverIds.has(n.id) ||
+          serverByContent.some(s => s.type === n.type && s.message === n.message && s.entityId === n.entityId);
+        const stale = prev.filter(n => n.id.startsWith('notif-') && !matchesServer(n));
+        return [...stale, ...items];
+      });
+      setHasMore((r.data?.length ?? 0) >= LIMIT);
+    } catch (err) {
+      console.warn('Failed to load notifications:', err);
+    }
   }, []);
+
+  // Initial load + live polling so the badge stays fresh during a session (issue 34).
+  useEffect(() => {
+    pageRef.current = 1;
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 30000);
+    const onFocus = () => fetchNotifications();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [fetchNotifications]);
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
@@ -86,7 +111,10 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       const r = await notificationService.getAll({ limit: LIMIT, sort: '-createdAt', page: nextPage });
       const items = (r.data || []).map(formatNotif);
       if (items.length === 0) { setHasMore(false); return; }
-      setNotifications(prev => [...prev, ...items]);
+      setNotifications(prev => {
+        const existing = new Set(prev.map(n => n.id));
+        return [...prev, ...items.filter(n => !existing.has(n.id))];
+      });
       pageRef.current = nextPage;
       setHasMore(items.length >= LIMIT);
     } catch { setHasMore(false); }

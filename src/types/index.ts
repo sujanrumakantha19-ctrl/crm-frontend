@@ -14,6 +14,8 @@ export interface User {
   groupId?: string;
   dob?: string;
   gender?: 'Male' | 'Female' | 'Other';
+  companyName?: string;
+  reraId?: string;
   isActive: boolean;
 }
 
@@ -82,6 +84,7 @@ export interface Plot {
   timeline: PlotTimelineEvent[];
   pendingApproval?: PlotApproval;
   bookedBy?: {
+    id?: string;
     name: string;
     phone: string;
     paymentStatus: 'Not Paid' | 'Partially Paid' | 'Fully Paid';
@@ -91,9 +94,23 @@ export interface Plot {
     bankFollowerPhone?: string;
     loanStage?: string;
     type: 'customer' | 'staff';
+    leadId?: string;
+    customerName?: string;
+    displayId?: string;
+    email?: string;
+    assignedTo?: string;
+    bookingDate?: string;
+    bookedAt?: string;
+    date?: string;
   };
   expectedRegistrationDate?: string;
   registrationDate?: string;
+  assignedTo?: string;
+  bookingDate?: string;
+  selectedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  price?: number;
 }
 
 export interface PlotApproval {
@@ -104,6 +121,7 @@ export interface PlotApproval {
   requestedAt: string;
   paymentStatus: 'Not Paid' | 'Partially Paid' | 'Fully Paid';
   notes?: string;
+  requestType?: string;
 }
 
 export interface PlotTimelineEvent {
@@ -154,6 +172,8 @@ export interface Lead {
   dob?: string;
   gender?: 'Male' | 'Female' | 'Other';
   createdAt?: string;
+  assignedAt?: string;
+  updatedAt?: string;
 }
 
 export interface FollowUp {
@@ -239,6 +259,7 @@ export interface ActivityLog {
   entityName: string;
   timestamp: string;
   ipAddress: string;
+  details?: string;
 }
 
 export interface ChannelPartner {
@@ -255,12 +276,16 @@ export interface ChannelPartner {
   initials: string;
   avatarBg: string;
   notes?: string;
+  gender?: 'Male' | 'Female' | 'Other';
+  dob?: string;
 }
 
 export interface Notification {
   id: string;
-  type: 'birthday' | 'lead_status' | 'new_lead' | 'task_assigned' | 'attendance' | 'booking';
+  type: 'birthday' | 'lead_status' | 'new_lead' | 'task_assigned' | 'task_comment' | 'attendance' | 'booking' | string;
   message: string;
+  title?: string;
+  link?: string;
   timeAgo: string;
   isRead: boolean;
   isToday: boolean;

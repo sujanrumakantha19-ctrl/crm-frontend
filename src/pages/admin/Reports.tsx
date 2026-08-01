@@ -127,12 +127,18 @@ export default function AdminReports() {
   }, [activeTab, page, currentFilter, fetchSummary, fetchTabData]);
 
   useEffect(() => {
+    const f = filters[activeTab];
+    const params: Record<string, string> = { tab: activeTab };
+    if (f.month) params.month = f.month;
+    if (f.year) params.year = f.year;
+    if (f.dateFrom) params.dateFrom = f.dateFrom;
+    if (f.dateTo) params.dateTo = f.dateTo;
     setExportInfo({
       endpoint: '/export/reports',
       filename: 'report',
-      params: { tab: activeTab },
+      params,
     });
-  }, [activeTab, setExportInfo]);
+  }, [activeTab, filters, setExportInfo]);
 
   const updateCurrentFilter = (key: keyof FilterState, value: string) => {
     setFilters(prev => {

@@ -7,6 +7,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge';
 import { Modal } from '@/components/shared/Modal';
 import { getAvatarColor, getInitials } from '@/data/mockData';
 import { leadService, projectService, plotService, userService, channelPartnerService } from '@/services';
+import type { CheckPhoneLead } from '@/services/leads';
 import { useAuth } from '@/context/AuthContext';
 import type { LeadStatus, Lead, Project, Plot, User } from '@/types';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
@@ -128,7 +129,7 @@ export default function AdminLeadDetail() {
   const [gender, setGender] = useState<'Male' | 'Female' | 'Other'>('Male');
 
   // Duplicate phone state
-  const [duplicateLead, setDuplicateLead] = useState<{ id: string; displayId?: string; phone: string; status: string; assignedToName?: string; assignedToDisplayId?: string } | null>(null);
+  const [duplicateLead, setDuplicateLead] = useState<CheckPhoneLead | null>(null);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const lastCheckedPhoneRef = useRef<string>('');
 
@@ -393,9 +394,11 @@ export default function AdminLeadDetail() {
 
     try {
       const updateData: any = { followUps: updatedFollowUps };
-      if (nextFollowUpDate) {
-        updateData.nextFollowUpDate = nextFollowUpDate;
-      }
+      // Keep the top-level nextFollowUpDate in sync with the newest follow-up's date;
+      // clear it (send null) when the newest follow-up has no next date, so a stale
+      // reminder date never persists.
+      const newestFollowUp = updatedFollowUps[updatedFollowUps.length - 1];
+      updateData.nextFollowUpDate = newestFollowUp?.nextFollowUpDate || null;
       const res: any = await leadService.update(targetLeadId, updateData);
       if (res && res.data) {
         setLeadState(res.data as Lead);

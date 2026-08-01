@@ -10,48 +10,8 @@ import { userService, attendanceService } from '@/services';
 import type { User as UserType } from '@/types';
 import { useExportContext } from '@/context/ExportContext';
 import { TableSkeletonRows } from '@/components/shared/SkeletonLoader';
-
-export function parseDurationHours(durationStr?: string): number {
-  if (!durationStr || durationStr === '-' || durationStr === '—') return 0;
-  const match = String(durationStr).match(/(\d+)\s*h(?:ours?)?\s*(\d*)\s*m?/i);
-  if (match) {
-    const hrs = parseInt(match[1], 10) || 0;
-    const mins = match[2] ? (parseInt(match[2], 10) || 0) : 0;
-    return hrs + (mins / 60);
-  }
-  const minOnlyMatch = String(durationStr).match(/(\d+)\s*m(?:in(?:ute)?s?)?/i);
-  if (minOnlyMatch) {
-    const mins = parseInt(minOnlyMatch[1], 10) || 0;
-    return mins / 60;
-  }
-  return 0;
-}
-
-export function matchesStatusFilter(recordStatus: string, durationStr: string, filterValue: string): boolean {
-  if (!filterValue || filterValue === 'All') return true;
-
-  const hours = parseDurationHours(durationStr);
-
-  if (filterValue === 'Present') {
-    if (recordStatus === 'Present') return true;
-    if (hours >= 1.0) return true;
-    return false;
-  }
-
-  if (filterValue === 'Half Day') {
-    if (recordStatus === 'Half Day') return true;
-    if (hours >= 4.5 && hours <= 6.0) return true;
-    return false;
-  }
-
-  if (filterValue === 'Below 4 Hours' || filterValue === '< 4 Hours' || filterValue === 'below_4') {
-    if (hours > 0 && hours < 4.0) return true;
-    if (recordStatus === 'Below 4 Hours') return true;
-    return false;
-  }
-
-  return recordStatus === filterValue;
-}
+import { toast } from 'sonner';
+import { parseDurationHours, matchesStatusFilter } from '@/utils/attendanceFilters';
 
 export default function AdminAttendance() {
   const [staffUsers, setStaffUsers] = useState<UserType[]>([]);
@@ -418,6 +378,48 @@ export default function AdminAttendance() {
       .finally(() => setModalLoading(false));
   };
 
+  // Allow admins to persist Absent / Half Day / Present for a staff member on a date (issue 28).
+  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
+
+  const handleStatusChange = async (rec: any, newStatus: string) => {
+    if (!newStatus || newStatus === rec.status) return;
+    setSavingStatusId(rec.id);
+    try {
+      const isSynthetic = String(rec.id).startsWith('absent-') || String(rec.id).startsWith('off-') || String(rec.id).startsWith('future-');
+      if (isSynthetic) {
+        // Fabricated absent/off/future row -> create a real persisted record.
+        await attendanceService.create({
+          staffId: rec.staffId,
+          staffName: rec.staffName,
+          date: rec.date,
+          status: newStatus,
+          checkIn: newStatus === 'Present' ? '-' : '-',
+          checkOut: '-',
+          duration: '-',
+          activityType: newStatus === 'Present' ? 'Office' : 'Office',
+          role: rec.role || 'Sales Executive',
+        });
+      } else {
+        await attendanceService.update(rec.id, { status: newStatus });
+      }
+
+      toast.success(`${rec.staffName} marked as ${newStatus} for ${formatDateStr(rec.date)}`);
+
+      // Refresh backend records for this date so the synthetic fallback is replaced.
+      const res = await attendanceService.getByDate(rec.date);
+      if (res.data && Array.isArray(res.data)) {
+        setApiRecords(prev => {
+          const others = prev.filter(r => (r.date !== rec.date) || (r.staffId !== rec.staffId));
+          return [...others, ...res.data.filter((r: any) => String(r.staffId || r.userId || r.user?.id) === rec.staffId)];
+        });
+      }
+    } catch {
+      toast.error(`Failed to update ${rec.staffName}'s status`);
+    } finally {
+      setSavingStatusId(null);
+    }
+  };
+
   function formatDateStr(dateStr: string): string {
     const parts = dateStr.split('-');
     if (parts.length !== 3) return dateStr;
@@ -471,7 +473,7 @@ export default function AdminAttendance() {
               </button>
             </>
           )}
-          <button onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance', params: { tab: 'main' } }); setTimeout(() => triggerDownload(), 50); }} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors ml-2">
+          <button onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance', params: { tab: 'main', month: `${year}-${String(month).padStart(2, '0')}` } }); setTimeout(() => triggerDownload(), 50); }} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors ml-2">
             <Download size={13} /> Export
           </button>
         </div>
@@ -843,7 +845,7 @@ export default function AdminAttendance() {
                 />
               </div>
               <button
-                onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance-details', params: { tab: 'details' } }); setTimeout(() => triggerDownload(), 50); }}
+                onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance-details', params: { tab: 'details', month: `${year}-${String(month).padStart(2, '0')}`, ...(dailyModalDate ? { date: dailyModalDate } : {}) } }); setTimeout(() => triggerDownload(), 50); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold shadow-sm transition-all"
               >
                 <Download size={14} /> Export CSV
@@ -937,7 +939,21 @@ export default function AdminAttendance() {
                           <td className="px-4 py-3 text-sm text-slate-600">{rec.checkOut || '-'}</td>
                           <td className="px-4 py-3 text-sm font-bold text-slate-700">{rec.duration || '-'}</td>
                           <td className="px-4 py-3">
-                            <StatusBadge status={rec.status} />
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={rec.status} />
+                              <select
+                                value=""
+                                disabled={savingStatusId === rec.id}
+                                onChange={e => handleStatusChange(rec, e.target.value)}
+                                className="text-[10px] font-semibold border border-slate-200 rounded px-1.5 py-0.5 bg-white text-slate-600 hover:border-brand-blue outline-none transition-colors cursor-pointer disabled:opacity-50"
+                                title="Change status"
+                              >
+                                <option value="" disabled>Set…</option>
+                                <option value="Present">Present</option>
+                                <option value="Half Day">Half Day</option>
+                                <option value="Absent">Absent</option>
+                              </select>
+                            </div>
                           </td>
                         </tr>
                       );

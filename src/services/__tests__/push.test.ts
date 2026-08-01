@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock Capacitor modules before importing pushService
 vi.mock('@capacitor/core', () => ({
@@ -15,6 +15,7 @@ vi.mock('@capacitor/push-notifications', () => ({
     register: vi.fn(),
     removeAllListeners: vi.fn(),
     addListener: vi.fn(),
+    createChannel: vi.fn(),
   },
 }))
 
@@ -39,14 +40,14 @@ describe('pushService', () => {
   })
 
   describe('initializePush', () => {
-    it('should skip initialization on non-native platform', async () => {
+    it('should skip web push when the Web Push API is unsupported', async () => {
       mockCapacitor.isNativePlatform.mockReturnValue(false)
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
       await pushService.initializePush(vi.fn())
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Not running on a native platform')
+        expect.stringContaining('Web Push API not supported')
       )
       expect(mockPush.register).not.toHaveBeenCalled()
       consoleSpy.mockRestore()

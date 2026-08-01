@@ -10,6 +10,7 @@ import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
 import { channelPartnerService, userService, leadService, activityLogService } from '@/services';
 import type { ActivityLog, ChannelPartner, Lead } from '@/types';
 import { NameTag } from '@/components/shared/NameTag';
+import { toast } from 'sonner';
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '—';

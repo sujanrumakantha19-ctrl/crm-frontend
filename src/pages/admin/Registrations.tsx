@@ -848,11 +848,6 @@ export default function AdminRegistrations() {
       }
     }
 
-    if (activeTab === 'upcoming' && editDate && editDate < getTodayStr()) {
-      toast.error('Expected registration date cannot be in the past.');
-      return;
-    }
-
     setSaving(true);
     try {
       const targetId = editSelectedPlotId !== 'lead_default' ? editSelectedPlotId : (editingPlot.id || (editingPlot as any)._id);
@@ -872,6 +867,20 @@ export default function AdminRegistrations() {
           } : {}),
         },
       } as any);
+
+      const matchedLead = getLeadForPlot(editingPlot);
+      if (matchedLead) {
+        const leadId = matchedLead.id || (matchedLead as any)._id;
+        await leadService.update(leadId, {
+          paymentStatus: editPaymentStatus,
+          loanStage: editLoanStage,
+          ...(activeTab === 'registered' ? {
+            bank: editBank.trim(),
+            bankFollowerName: editBankFollowerName.trim(),
+            bankFollowerPhone: editBankFollowerPhone.trim(),
+          } : {}),
+        } as any).catch(() => {});
+      }
 
       toast.success('Updated successfully');
       setEditModalOpen(false);
@@ -1155,7 +1164,7 @@ export default function AdminRegistrations() {
             {hasActiveFilters ? 'No records found matching filters' : activeTab === 'registered' ? 'No registered plots found' : 'No upcoming registrations found'}
           </p>
           {hasActiveFilters && (
-            <button onClick clearFilters={() => clearFilters()} className="text-xs text-brand-blue hover:underline mt-2 font-medium">Clear all filters</button>
+            <button onClick={clearFilters} className="text-xs text-brand-blue hover:underline mt-2 font-medium">Clear all filters</button>
           )}
         </div>
       ) : (
@@ -1585,7 +1594,6 @@ export default function AdminRegistrations() {
             </label>
             <input
               type="date"
-              min={activeTab === 'upcoming' ? getTodayStr() : undefined}
               value={editDate}
               onChange={e => setEditDate(e.target.value)}
               className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
@@ -1656,71 +1664,6 @@ export default function AdminRegistrations() {
               ))}
             </select>
           </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">
-              {activeTab === 'registered' ? 'Registration Date' : 'Expected Registration Date'}
-            </label>
-            <input
-              type="date"
-              min={activeTab === 'upcoming' ? getTodayStr() : undefined}
-              value={editDate}
-              onChange={e => setEditDate(e.target.value)}
-              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
-            />
-          </div>
-
-          {/* Bank & Follower Fields (Registered Tab & LOAN payment method Only) */}
-          {activeTab === 'registered' && (editingPlot?.bookedBy?.paymentMethod || 'CASH') === 'LOAN' && (
-            <>
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>
-                <FollowerAutocomplete
-                  id="reg-follower-name"
-                  value={editBankFollowerName}
-                  onChange={setEditBankFollowerName}
-                  onSelect={opt => {
-                    setEditBankFollowerName(opt.name);
-                    if (opt.bank) setEditBank(opt.bank);
-                    if (opt.phone) setEditBankFollowerPhone(opt.phone);
-                  }}
-                  options={existingBankFollowers}
-                  placeholder="Select existing or type new follower name..."
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Mobile No</label>
-                <input
-                  type="tel"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={editBankFollowerPhone}
-                  onChange={e => setEditBankFollowerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  placeholder="Enter 10-digit mobile number..."
-                  maxLength={10}
-                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Name</label>
-                <input
-                  type="text"
-                  list="reg-banks-list"
-                  value={editBank}
-                  onChange={e => handleBankChange(e.target.value)}
-                  placeholder="Select existing or type new bank name..."
-                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
-                />
-                <datalist id="reg-banks-list">
-                  {existingBanks.map(b => (
-                    <option key={b} value={b} />
-                  ))}
-                </datalist>
-              </div>
-            </>
-          )}
 
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => { setEditModalOpen(false); setEditingPlot(null); }} className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>

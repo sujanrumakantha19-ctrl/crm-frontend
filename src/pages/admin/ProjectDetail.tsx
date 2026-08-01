@@ -17,9 +17,9 @@ import { whatsappService } from '@/services/whatsapp';
 
 import { UPLOADS_BASE, getFileUrl, api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useExportContext } from '@/context/ExportContext';
 import { logActivity } from '@/lib/activityLogger';
 import { toast } from 'sonner';
-import { getTodayStr } from '@/lib/utils';
 import type { Plot, Lead, User, Project, SellerInfo } from '@/types';
 
 const plotStatusStyles: Record<string, { bg: string; textCol: string }> = {
@@ -74,6 +74,7 @@ export default function AdminProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const { role, user: authUser } = useAuth();
+  const { setExportInfo, triggerDownload } = useExportContext();
   const isAdmin = role === 'admin';
   const isPartner = role === 'partner';
   const [project, setProject] = useState<Project | undefined>(undefined);
@@ -738,10 +739,6 @@ export default function AdminProjectDetail() {
 
   const handleBookPlot = async () => {
     if (!selectedPlot || !selectedCustomer) return;
-    if (expectedRegistrationDate && expectedRegistrationDate < getTodayStr()) {
-      toast.error('Expected registration date cannot be in the past.');
-      return;
-    }
     if (saving) return;
     setSaving(true);
     const isStaffBooking = role !== 'admin';
@@ -797,7 +794,18 @@ export default function AdminProjectDetail() {
           expectedRegistrationDate: expectedRegistrationDate || '',
         } as any);
       } else {
-        await plotService.update(plotId, updatedPlot);
+        await plotService.bookPlot(plotId, {
+          leadId: customerId,
+          customerName: selectedCustomer.customerName,
+          phone: selectedCustomer.phone,
+          paymentStatus: pStatus,
+          paymentMethod: paymentMode === 'Loan' ? 'LOAN' : 'CASH',
+          bank: (selectedCustomer as any).bank || '',
+          bankFollowerName: (selectedCustomer as any).bankFollowerName || '',
+          bankFollowerPhone: (selectedCustomer as any).bankFollowerPhone || '',
+          notes: `Payment Mode: ${paymentMode}`,
+          expectedRegistrationDate: expectedRegistrationDate || '',
+        } as any);
       }
       // Update lead status to Customer
       if (customerId && !isStaffBooking) {
@@ -853,7 +861,7 @@ export default function AdminProjectDetail() {
     };
 
     const plotId = updatedPlot.id || (updatedPlot as any)._id;
-      await plotService.update(plotId, updatedPlot);
+      const regRes = await plotService.registerPlot(plotId, { registrationDate });
       // Update lead payment status & fetch latest lead details to get assigned staff
       let targetLead = projectLeads.find(l => l.customerName === selectedPlot.bookedBy?.name || l.phone === selectedPlot.bookedBy?.phone);
       if (!targetLead && selectedPlot.bookedBy?.phone) {
@@ -868,8 +876,9 @@ export default function AdminProjectDetail() {
         const leadId = targetLead.id || (targetLead as any)._id;
         await leadService.update(leadId, { paymentStatus: 'Fully Paid' } as any).catch(() => {});
       }
-      setPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? updatedPlot : p));
-      setSelectedPlot(updatedPlot);
+      const regPlot = (regRes && (regRes as any).data) ? (regRes as any).data : updatedPlot;
+      setPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? regPlot : p));
+      setSelectedPlot(regPlot);
 
       // Assign post-registration tasks to the staff who booked/handled the plot/lead; fallback to admin if no staff or booked by admin
       let assigneeId: string | undefined = undefined;
@@ -886,10 +895,11 @@ export default function AdminProjectDetail() {
       }
 
       if (!resolvedLead && plotId) {
-        try {
-          const lRes = await leadService.getAll({ plotId: plotId, limit: 1 });
-          if (lRes.data && lRes.data.length > 0) resolvedLead = lRes.data[0];
-        } catch (e) {}
+        const matchedByPlotId = projectLeads.find(l => {
+          const lPlotId = typeof l.plotId === 'object' ? (l.plotId as any)?._id || (l.plotId as any).id : l.plotId;
+          return String(lPlotId) === String(plotId);
+        });
+        if (matchedByPlotId) resolvedLead = matchedByPlotId as any;
       }
 
       if (resolvedLead && resolvedLead.assignedTo) {
@@ -1099,6 +1109,17 @@ export default function AdminProjectDetail() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setExportInfo({ endpoint: '/export/project-detail', filename: 'project-detail', params: { id } });
+              setTimeout(() => triggerDownload(), 50);
+            }}
+            className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+            title="Export all project, plot, booking and customer details"
+          >
+            <Download size={15} /> Export
+          </button>
           <button
             type="button"
             onClick={() => setShareLocationOpen(true)}
@@ -2261,17 +2282,8 @@ export default function AdminProjectDetail() {
                           <label className="block text-xs font-semibold text-slate-600 mb-1">Expected Registration Date</label>
                           <input
                             type="date"
-                            min={getTodayStr()}
                             value={expectedRegistrationDate}
-                            onChange={e => {
-                              const val = e.target.value;
-                              if (val && val < getTodayStr()) {
-                                toast.error('Expected registration date cannot be in the past.');
-                                setExpectedRegistrationDate('');
-                              } else {
-                                setExpectedRegistrationDate(val);
-                              }
-                            }}
+                            onChange={e => setExpectedRegistrationDate(e.target.value)}
                             className="w-full h-9 px-3 border border-slate-200 rounded-md text-sm bg-white"
                           />
                         </div>
@@ -2961,14 +2973,18 @@ export default function AdminProjectDetail() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteSinglePlot(plot)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-                          title="Delete plot"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {isAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSinglePlot(plot)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                            title="Delete plot"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-300">-</span>
+                        )}
                       </td>
                     </tr>
                   ))}

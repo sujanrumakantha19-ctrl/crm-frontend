@@ -9,6 +9,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   updateUser: (updatedData: Partial<User>) => void;
+  setUserFromAuth: (authData: { id: string; name: string; email: string; role: UserRole; initials: string; designation: string; phone: string; avatarBg: string }) => void;
   isAuthenticated: boolean;
   loading: boolean;
   checkedIn: boolean;
@@ -25,6 +26,7 @@ const AuthContext = createContext<AuthContextType>({
   login: async () => {},
   logout: () => {},
   updateUser: () => {},
+  setUserFromAuth: () => {},
   isAuthenticated: false,
   loading: true,
   checkedIn: false,
@@ -65,9 +67,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.setItem('crm_user', JSON.stringify(u));
       })
       .catch((err) => {
-        // Only clear session on explicit auth failure, not network errors
-        if (err?.message === 'Unauthorized' || err?.message?.includes('401')) {
+        // Only clear session on explicit auth failure, not network errors.
+        // Deactivated/invalidated accounts return "Not authorized to access this route".
+        const msg = err?.message || '';
+        if (msg === 'Unauthorized' || msg.includes('401') || msg.includes('Not authorized')) {
           localStorage.removeItem('crm_token');
+          localStorage.removeItem('crm_role');
           localStorage.removeItem('crm_user');
           setUser(null);
         }
@@ -76,13 +81,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await authService.login({ email, password });
-    const u = { ...res.data, id: (res.data as unknown as { _id?: string })._id || res.data.id } as unknown as User;
+  // Soft logout triggered by any 401 across the app (see lib/api.ts) without a full page reload.
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setUser(null);
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+  }, []);
+
+  const setUserFromAuth = useCallback((authData: { id: string; name: string; email: string; role: UserRole; initials: string; designation: string; phone: string; avatarBg: string }) => {
+    const u = { ...authData, id: (authData as unknown as { _id?: string })._id || authData.id } as unknown as User;
     setUser(u);
     localStorage.setItem('crm_user', JSON.stringify(u));
     localStorage.setItem('crm_role', u.role);
   }, []);
+
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await authService.login({ email, password });
+    setUserFromAuth(res.data);
+  }, [setUserFromAuth]);
 
   const logout = useCallback(() => {
     authService.logout();

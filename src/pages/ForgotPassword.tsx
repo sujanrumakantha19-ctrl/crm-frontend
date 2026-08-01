@@ -16,7 +16,7 @@ export default function ForgotPassword() {
     setError('');
     
     try {
-      await authService.forgotPassword(email);
+      await authService.forgotPassword(email.trim());
       setSuccess(true);
     } catch (err) {
       setError('Failed to send reset link. Please try again.');

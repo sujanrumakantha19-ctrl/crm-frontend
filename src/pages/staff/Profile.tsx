@@ -7,11 +7,14 @@ import type { Group } from '@/types';
 
 export default function StaffProfile() {
   const { user: authUser } = useAuth();
-  const user = authUser || { name: 'Staff', email: '', phone: '', designation: '', groupId: '' };
+  const user = authUser || { name: 'Staff', email: '', phone: '', designation: '', groupId: '', id: '', dob: '', initials: '', avatarBg: '', displayId: '' };
   const [groups, setGroups] = useState<Group[]>([]);
   useEffect(() => { groupService.getAll({ limit: 50 }).then(r => setGroups(r.data || [])).catch(() => {}); }, []);
   const group = groups.find(g => g.members?.includes(user.id || (user as unknown as {_id:string})._id));
-  const age = user.dob ? Math.floor((Date.now() - new Date(user.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null;
+  const age = user.dob ? (() => {
+    const dobTime = new Date(user.dob).getTime();
+    return !isNaN(dobTime) ? Math.floor((Date.now() - dobTime) / (365.25 * 24 * 60 * 60 * 1000)) : null;
+  })() : null;
 
   return (
     <div className="max-w-xl mx-auto">

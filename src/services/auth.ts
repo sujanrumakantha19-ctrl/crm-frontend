@@ -1,5 +1,5 @@
 import { api } from '@/lib/api';
-import type { User } from '@/types';
+import type { User, UserRole } from '@/types';
 
 export interface LoginPayload {
   email: string;
@@ -17,9 +17,18 @@ export interface RegisterPayload {
   avatarBg?: string;
 }
 
+// Shape of the `data` payload returned by /auth/login and /auth/register.
+// The backend wraps it as { success, token, data: AuthResponse }.
 interface AuthResponse {
-  token: string;
-  data: User & { id: string };
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  initials: string;
+  designation: string;
+  phone: string;
+  avatarBg: string;
+  employeeId?: string;
 }
 
 export const authService = {
@@ -47,12 +56,14 @@ export const authService = {
     return api.post('/auth/reset-password', { token, newPassword });
   },
 
-  async updateProfile(data: { name?: string; email?: string; phone?: string; dob?: string }) {
+  async updateProfile(data: { name?: string; email?: string; phone?: string; dob?: string; avatar?: string }) {
     return api.put<User>('/auth/update-profile', data);
   },
 
   async changePassword(currentPassword: string, newPassword: string) {
-    return api.put('/auth/change-password', { currentPassword, newPassword });
+    const res = await api.put<{ token?: string }>('/auth/change-password', { currentPassword, newPassword });
+    if (res.token) api.setToken(res.token);
+    return res;
   },
 
   async savePushToken(token: string, platform: string) {

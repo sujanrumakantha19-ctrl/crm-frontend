@@ -97,7 +97,7 @@ export default function StaffDashboard() {
   const pendingPaymentCustomersCount = useMemo(() => {
     return plots.filter(p => {
       if (p.status !== 'Registered') return false;
-      const pStatus = p.bookedBy?.paymentStatus || (p as any).paymentStatus;
+      const pStatus = p.bookedBy?.paymentStatus || (p as any).paymentStatus || 'Not Paid';
       return pStatus !== 'Fully Paid';
     }).length;
   }, [plots]);

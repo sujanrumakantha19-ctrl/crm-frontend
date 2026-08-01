@@ -51,6 +51,23 @@ export interface FollowUpResponse {
   };
 }
 
+export interface CheckPhoneLead {
+  id: string;
+  displayId?: string;
+  customerName: string;
+  phone: string;
+  status: string;
+  assignedToName?: string;
+  assignedToDisplayId?: string | null;
+}
+
+export interface CheckPhoneResult {
+  success: boolean;
+  exists: boolean;
+  lead?: CheckPhoneLead;
+  duplicatesCount?: number;
+}
+
 export const leadService = {
   getAll(params?: LeadQuery) {
     return api.get<Lead[]>('/leads', params as Record<string, string | number | undefined>);
@@ -62,7 +79,7 @@ export const leadService = {
     return api.get<Lead>(`/leads/${id}`);
   },
   getFollowUps(params?: FollowUpQuery) {
-    return api.get<any>('/leads/follow-ups', params as Record<string, string | number | undefined>);
+    return api.get<FollowUpResponse>('/leads/follow-ups', params as Record<string, string | number | undefined>);
   },
   getByStatus(status: string) {
     return api.get<Lead[]>(`/leads/status/${status}`);
@@ -74,11 +91,9 @@ export const leadService = {
     return api.get<Lead[]>(`/leads/project/${projectId}`);
   },
   checkPhone(phone: string) {
-    return api.get<{
-      success: boolean;
-      exists: boolean;
-      lead?: { id: string; customerName: string; phone: string; status: string; assignedToName: string };
-    }>(`/leads/check-phone/${encodeURIComponent(phone)}`);
+    // /leads/check-phone returns a flat payload (success/exists/lead), not
+    // wrapped in a `data` key, so cast the ApiResponse wrapper to that shape.
+    return api.get<CheckPhoneResult>(`/leads/check-phone/${encodeURIComponent(phone)}`) as unknown as Promise<CheckPhoneResult>;
   },
   create(data: Partial<Lead>) {
     return api.post<Lead>('/leads', data);

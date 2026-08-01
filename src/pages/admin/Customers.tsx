@@ -353,7 +353,6 @@ export default function AdminCustomers() {
       const f = filtersRef.current;
       const params: Record<string, any> = {
         status: 'Customer',
-        paymentMethod: 'LOAN',
         page: p,
         limit: 10,
         sort: SORT_API_MAP[f.sortBy] || '-createdAt',
@@ -578,11 +577,6 @@ export default function AdminCustomers() {
       }
     }
 
-    if (editExpectedRegistrationDate && editExpectedRegistrationDate < getTodayStr()) {
-      toast.error('Expected Registration Date cannot be in the past');
-      return;
-    }
-
     setSaving(true);
     try {
       // 1. Update Lead Profile
@@ -685,12 +679,7 @@ export default function AdminCustomers() {
               onChange={e => updateFilter('search', e.target.value)}
               className="w-full h-10 pl-9 pr-8 border border-slate-200 rounded-lg text-sm focus:border-brand-green focus:ring-2 focus:ring-emerald-100 outline-none transition-all bg-white"
             />
-            {refreshing && (
-              <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                <div className="w-4 h-4 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
-              </div>
-            )}
-            {!refreshing && filters.search && (
+            {!filters.search && (
               <button onClick={() => updateFilter('search', '')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
                 <X size={14} />
               </button>
@@ -859,7 +848,7 @@ export default function AdminCustomers() {
               <table className="w-full text-sm">
                 <thead className="bg-slate-50/80 border-b border-slate-200">
                   <tr>
-                    {['Customer Name', 'Contact & City', 'Property / Plot', 'Assigned To', 'Bank & Follower', 'Loan Stage', 'Expected Reg. Date', 'Payment Status', 'Actions'].map(h => (
+                    {['Customer & Contact', 'Property / Plot', 'Location & Source', 'Assigned To', 'Loan Stage', 'Bank & Follower', 'Expected Reg. Date', 'Payment Status', 'Actions'].map(h => (
                       <th key={h} className="text-left px-4 py-3.5 font-bold text-slate-600 text-xs uppercase tracking-wider whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -885,40 +874,66 @@ export default function AdminCustomers() {
                     const isTomorrow = expDate === tomorrowStr;
 
                     const loanStage = c.loanStage || (c.bookedBy?.loanStage) || 'Not Applied';
-                    const activeBank = c.bankName || (c.bookedBy?.bankName) || '—';
-                    const activeFollowerName = c.followerName || (c.bookedBy?.followerName) || '';
-                    const activeFollowerPhone = c.followerPhone || (c.bookedBy?.followerPhone) || '';
+                    const activeBank = c.bank || (c.bookedBy?.bank) || '—';
+                    const activeFollowerName = c.bankFollowerName || (c.bookedBy?.bankFollowerName) || '';
+                    const activeFollowerPhone = c.bankFollowerPhone || (c.bookedBy?.bankFollowerPhone) || '';
+                    const surveyNum = getSurveyNumber(c);
                     const activeExpDate = expDate;
                     const activePaymentStatus = c.paymentStatus || (c.bookedBy?.paymentStatus) || (c.advanceAmount && c.advanceAmount > 0 ? 'Advance Paid' : 'Advance Not Paid');
                     const lid = cId;
 
                     return (
                       <tr key={cId} className="hover:bg-slate-50/70 transition-colors cursor-pointer group" onClick={() => navigate(`/${role}/customers/${cId}`)}>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
+                        {/* 1. Customer & Contact */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${cId}`)}>
                           <div className="flex items-center gap-2.5">
                             <Avatar initials={getInitials(c.customerName)} size="sm" bg={getAvatarColor(c.customerName)} />
-                            <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm"><NameTag name={c.customerName} displayId={c.displayId} /></span>
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm"><NameTag name={c.customerName} displayId={c.displayId} /></span>
+                              <div className="flex items-center gap-1 text-xs text-slate-500 font-medium mt-0.5">
+                                <Phone size={11} className="text-slate-400" />
+                                <span>{c.phone || '—'}</span>
+                                {c.phone && (
+                                  <button
+                                    type="button"
+                                    onClick={e => { e.stopPropagation(); setWhatsAppCustomer({ phone: c.phone, name: c.customerName }); }}
+                                    className="p-0.5 hover:bg-emerald-50 rounded text-emerald-600 transition-colors ml-1"
+                                    title="Chat on WhatsApp"
+                                  >
+                                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.003 5.291 5.3 0 11.799 0c3.148.001 6.108 1.228 8.334 3.457 2.227 2.229 3.452 5.19 3.45 8.34-.004 6.502-5.302 11.793-11.8 11.793a11.72 11.72 0 0 1-5.905-1.582L0 24zm6.549-3.791c1.472.873 2.924 1.34 4.703 1.341 5.485 0 9.948-4.457 9.951-9.94.002-2.656-1.03-5.153-2.905-7.03C16.48 2.705 13.987 1.666 11.797 1.667c-5.49 0-9.952 4.453-9.955 9.937-.001 1.83.483 3.61 1.4 5.161l-.979 3.57 3.655-.959c1.488.81 2.927 1.233 4.689 1.233zm11.302-7.608c-.307-.154-1.821-.899-2.101-.998-.28-.1-.484-.15-.688.156-.204.307-.79.99-.968 1.2-.178.209-.356.234-.664.08-1.124-.564-1.868-.93-2.613-2.204-.199-.34-.199-.546-.073-.728.115-.164.307-.356.462-.534.156-.178.208-.303.312-.507.105-.205.052-.385-.026-.539-.078-.154-.688-1.659-.942-2.27-.247-.595-.5-.515-.688-.525-.178-.009-.382-.01-.587-.01-.205 0-.539.077-.821.385-.282.307-1.078 1.053-1.078 2.569 0 1.516 1.102 2.985 1.256 3.19.154.205 2.169 3.312 5.254 4.643.734.317 1.307.506 1.754.648.74.235 1.414.201 1.947.122.593-.088 1.821-.745 2.076-1.463.254-.718.254-1.333.178-1.463-.076-.13-.28-.205-.588-.359z" /></svg>
+                                  </button>
+                                )}
+                                {extraCount > 0 && (
+                                  <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0"
+                                    title={`Also in: ${extraNames}`}
+                                  >
+                                    +{extraCount} more
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <div className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1 text-xs text-slate-700 font-medium">
-                              <Phone size={11} className="text-slate-400" />
-                              <span>{c.phone || '—'}</span>
-                              {c.phone && (
-                                <button
-                                  type="button"
-                                  onClick={e => { e.stopPropagation(); setWhatsAppCustomer({ phone: c.phone, name: c.customerName }); }}
-                                  className="p-0.5 hover:bg-emerald-50 rounded text-emerald-600 transition-colors ml-1"
-                                  title="Chat on WhatsApp"
-                                >
-                                  <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.003 5.291 5.3 0 11.799 0c3.148.001 6.108 1.228 8.334 3.457 2.227 2.229 3.452 5.19 3.45 8.34-.004 6.502-5.302 11.793-11.8 11.793a11.72 11.72 0 0 1-5.905-1.582L0 24zm6.549-3.791c1.472.873 2.924 1.34 4.703 1.341 5.485 0 9.948-4.457 9.951-9.94.002-2.656-1.03-5.153-2.905-7.03C16.48 2.705 13.987 1.666 11.797 1.667c-5.49 0-9.952 4.453-9.955 9.937-.001 1.83.483 3.61 1.4 5.161l-.979 3.57 3.655-.959c1.488.81 2.927 1.233 4.689 1.233zm11.302-7.608c-.307-.154-1.821-.899-2.101-.998-.28-.1-.484-.15-.688.156-.204.307-.79.99-.968 1.2-.178.209-.356.234-.664.08-1.124-.564-1.868-.93-2.613-2.204-.199-.34-.199-.546-.073-.728.115-.164.307-.356.462-.534.156-.178.208-.303.312-.507.105-.205.052-.385-.026-.539-.078-.154-.688-1.659-.942-2.27-.247-.595-.5-.515-.688-.525-.178-.009-.382-.01-.587-.01-.205 0-.539.077-.821.385-.282.307-1.078 1.053-1.078 2.569 0 1.516 1.102 2.985 1.256 3.19.154.205 2.169 3.312 5.254 4.643.734.317 1.307.506 1.754.648.74.235 1.414.201 1.947.122.593-.088 1.821-.745 2.076-1.463.254-.718.254-1.333.178-1.463-.076-.13-.28-.205-.588-.359z" /></svg>
-                                </button>
+
+                        {/* 2. Property / Plot */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${cId}`)}>
+                          <div className="flex flex-col gap-0.5 max-w-[210px]" title={`${projName}${projDisplayId ? ` [${projDisplayId}]` : ''}${surveyNum && surveyNum !== '—' ? ` | Survey: ${surveyNum}` : ''}`}>
+                            <div className="flex items-center gap-1 text-slate-900 font-semibold text-xs truncate">
+                              <Building2 size={12} className="text-slate-400 shrink-0" />
+                              <span className="truncate"><NameTag name={projName} displayId={projDisplayId} /></span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium flex-wrap">
+                              <span className="flex items-center gap-1 font-bold text-slate-700">
+                                <Home size={10} className="text-slate-400" />
+                                Plot {plotNum}
+                              </span>
+                              {surveyNum && surveyNum !== '—' && (
+                                <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded border border-slate-200" title="Survey Number">
+                                  {surveyNum}
+                                </span>
                               )}
                               {extraCount > 0 && (
-                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0"
-                                  title={`Also in: ${extraNames}`}
-                                >
+                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also in: ${extraNames}`}>
                                   +{extraCount} more
                                 </span>
                               )}
@@ -942,7 +957,14 @@ export default function AdminCustomers() {
                           {c.assignedToDisplayId || c.assignedToName || '—'}
                         </td>
 
-                        {/* 5. Bank & Follower */}
+                        {/* 5. Loan Stage */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
+                          <span className={`inline-block px-2.5 py-1 rounded text-xs font-bold border ${getLoanStageBadgeClass(loanStage)}`}>
+                            {loanStage}
+                          </span>
+                        </td>
+
+                        {/* 6. Bank & Follower */}
                         <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
                           <div className="flex flex-col gap-0.5 max-w-[180px]" title={`${activeBank} - ${activeFollowerName} (${activeFollowerPhone})`}>
                             <span className="text-xs font-bold text-slate-900 truncate">{activeBank}</span>
@@ -956,7 +978,7 @@ export default function AdminCustomers() {
                           </div>
                         </td>
 
-                        {/* 6. Expected Reg. Date */}
+                        {/* 7. Expected Reg. Date */}
                         <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
                           {(() => {
                             const expDate = activeExpDate;
@@ -992,12 +1014,12 @@ export default function AdminCustomers() {
                           })()}
                         </td>
 
-                        {/* 7. Payment Status */}
+                        {/* 8. Payment Status */}
                         <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
                           <StatusBadge status={activePaymentStatus} />
                         </td>
 
-                        {/* 7. Actions */}
+                        {/* 9. Actions */}
                         <td className="px-4 py-3.5 whitespace-nowrap">
                           <button onClick={e => handleEditClick(e, c)} className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-brand-green hover:text-white hover:border-brand-green transition-all shadow-sm">
                             <Pencil size={12} /> Edit
@@ -1179,7 +1201,6 @@ export default function AdminCustomers() {
             <label className="block text-xs font-semibold text-slate-500 mb-1">Expected Registration Date</label>
             <input
               type="date"
-              min={getTodayStr()}
               value={editExpectedRegistrationDate}
               onChange={e => setEditExpectedRegistrationDate(e.target.value)}
               className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none"

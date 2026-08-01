@@ -63,7 +63,7 @@ export default function StaffLeadsPool() {
     setLoading(true);
     pageRef.current = 1;
     hasMoreRef.current = true;
-    const params: any = { status: 'Open', assignedTo: 'unassigned', limit: LIMIT, sort: '-createdAt' };
+    const params: any = { status: 'Open', limit: LIMIT, sort: '-createdAt' };
     if (debouncedSearch.trim()) {
       params.search = debouncedSearch.trim();
     }
@@ -92,7 +92,7 @@ export default function StaffLeadsPool() {
       if (entries[0].isIntersecting && hasMoreRef.current && !loadingMore) {
         setLoadingMore(true);
         const nextPage = pageRef.current + 1;
-        const params: any = { status: 'Open', assignedTo: 'unassigned', limit: LIMIT, page: nextPage, sort: '-createdAt' };
+        const params: any = { status: 'Open', limit: LIMIT, page: nextPage, sort: '-createdAt' };
         if (debouncedSearch.trim()) params.search = debouncedSearch.trim();
         if (projectFilter !== 'all') params.projectId = projectFilter;
 

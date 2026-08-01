@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Eye, EyeOff, Building2 } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/utils';
 
@@ -20,10 +20,13 @@ export default function Login() {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) { setError('Please enter email and password'); return; }
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) { setError('Please enter email and password'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) { setError('Please enter a valid email address'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
     setLoading(true);
     setError('');
-    try { await login(email, password); } catch (err) { setError(err instanceof Error ? err.message : 'Login failed'); } finally { setLoading(false); }
+    try { await login(trimmedEmail, password); } catch (err) { setError(err instanceof Error ? err.message : 'Login failed'); } finally { setLoading(false); }
   };
 
   return (
@@ -158,6 +161,18 @@ export default function Login() {
                   )}
                 </button>
               </form>
+
+              {/* Register link */}
+              <p className="mt-6 text-center text-sm text-slate-500">
+                New to Samy &amp; Co?{' '}
+                <button
+                  type="button"
+                  onClick={() => navigate('/register')}
+                  className="font-semibold text-brand-blue hover:text-blue-800 transition-colors"
+                >
+                  Create a partner account
+                </button>
+              </p>
             </div>
           </div>
         </div>

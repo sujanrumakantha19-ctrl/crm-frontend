@@ -8,7 +8,6 @@ import { Modal } from '@/components/shared/Modal';
 import { NameTag } from '@/components/shared/NameTag';
 import { SearchDropdown } from '@/components/shared/SearchDropdown';
 import { useAuth } from '@/context/AuthContext';
-import { useNotifications } from '@/context/NotificationContext';
 import { taskAssigneeService } from '@/lib/taskAssignee';
 import { CardSkeletonGrid, InfiniteScrollSpinner } from '@/components/shared/SkeletonLoader';
 import { logActivity } from '@/lib/activityLogger';
@@ -16,15 +15,15 @@ import { useExportContext } from '@/context/ExportContext';
 import { taskService, projectService, userService, leadService } from '@/services';
 import type { Task, TaskStatus, TaskPriority, User, Project, Lead } from '@/types';
 
-const columns: { key: Exclude<TaskStatus, 'In Review'>; label: string; borderColor: string; tabColor: string; tabActiveClass: string }[] = [
+const columns: { key: TaskStatus; label: string; borderColor: string; tabColor: string; tabActiveClass: string }[] = [
   { key: 'To Do',      label: 'To Do',       borderColor: 'border-t-slate-400',   tabColor: 'text-slate-600',   tabActiveClass: 'border-slate-500 text-slate-800 bg-slate-50' },
   { key: 'In Progress',label: 'In Progress', borderColor: 'border-t-blue-500',    tabColor: 'text-brand-blue',    tabActiveClass: 'border-blue-500 text-blue-700 bg-blue-50' },
+  { key: 'In Review',  label: 'In Review',   borderColor: 'border-t-amber-500',   tabColor: 'text-amber-600',  tabActiveClass: 'border-amber-500 text-amber-700 bg-amber-50' },
   { key: 'Done',       label: 'Done',        borderColor: 'border-t-emerald-500', tabColor: 'text-emerald-600', tabActiveClass: 'border-emerald-500 text-emerald-700 bg-emerald-50' },
 ];
 
 export default function AdminTasks() {
   const { role, userId, user } = useAuth();
-  const { addNotification } = useNotifications();
   const location = useLocation();
   const { triggerDownload } = useExportContext();
 
@@ -284,17 +283,9 @@ export default function AdminTasks() {
       const created = res.data as Task;
       setTaskList(prev => [created, ...prev]);
 
-      if (assignee !== userId) {
-        const assigneeUser = staffUsers.find(s => s.id === assignee);
-        addNotification({
-          type: 'task_assigned',
-          message: `You have been assigned a new task: "${title.trim()}"`,
-          actorName: user?.name || 'Admin',
-          entityType: 'Task',
-          entityId: created.id || (created as any)._id,
-          userId: assigneeUser?.id,
-        });
-      }
+      // No client-side addNotification here: the backend createTask already
+      // notifies the real assignee server-side (taskController.js). Calling
+      // addNotification again produced a duplicate, mis-targeted alert (issue 32).
 
       setTitle(''); setDescription(''); setPriority('Medium');
       setProject('General'); setAssignee(userId || '');
@@ -353,7 +344,7 @@ export default function AdminTasks() {
     }
   };
 
-  const [activeTab, setActiveTab] = useState<Exclude<TaskStatus, 'In Review'>>('To Do');
+  const [activeTab, setActiveTab] = useState<TaskStatus>('To Do');
 
   if (initialLoading) return <CardSkeletonGrid count={6} />;
 
@@ -643,12 +634,13 @@ export default function AdminTasks() {
                   </div>
                 ) : (
                   <select
-                    value={taskModal.status === 'In Review' ? 'In Progress' : taskModal.status}
+                    value={taskModal.status}
                     onChange={e => handleUpdateStatus(taskModal.id || (taskModal as any)._id, e.target.value as TaskStatus)}
                     className="w-full mt-1 h-9 px-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none transition-all font-medium cursor-pointer"
                   >
                     <option value="To Do">To Do</option>
                     <option value="In Progress">In Progress</option>
+                    <option value="In Review">In Review</option>
                     <option value="Done">Done</option>
                   </select>
                 )}

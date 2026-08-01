@@ -6,6 +6,8 @@ import { Toaster } from '@/components/ui/sonner';
 import { Shell } from '@/components/layout/Shell';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
+import Register from '@/pages/Register';
+import ResetPassword from '@/pages/ResetPassword';
 
 // Admin pages
 import AdminDashboard from '@/pages/admin/Dashboard';
@@ -25,6 +27,7 @@ import AdminReports from '@/pages/admin/Reports';
 import AdminRegistrations from '@/pages/admin/Registrations';
 import AdminCustomers from '@/pages/admin/Customers';
 import AdminCustomerDetail from '@/pages/admin/CustomerDetail';
+import AdminGuideline from '@/pages/admin/Guideline';
 import AdminAbout from '@/pages/admin/About';
 import StaffAbout from '@/pages/staff/About';
 import PartnerAbout from '@/pages/partner/About';
@@ -51,9 +54,11 @@ export default function App() {
       <NotificationProvider>
         <ExportProvider>
         <Routes>
-          {/* Login & Forgot Password */}
+          {/* Login, Register & Password Reset */}
           <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
 
           {/* Admin routes */}
           <Route element={<Shell role="admin" />}>
@@ -76,6 +81,7 @@ export default function App() {
             <Route path="/admin/channel-partners" element={<AdminChannelPartners />} />
             <Route path="/admin/channel-partners/:id" element={<AdminChannelPartnerDetail />} />
             <Route path="/admin/reports" element={<AdminReports />} />
+            <Route path="/admin/guideline" element={<AdminGuideline />} />
             <Route path="/admin/about" element={<AdminAbout />} />
           </Route>
 

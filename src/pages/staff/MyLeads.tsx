@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
 import { leadService, projectService, userService, channelPartnerService } from '@/services';
+import type { CheckPhoneLead } from '@/services/leads';
 import type { Lead, Project, User, LeadStatus } from '@/types';
 import { Search, Phone, MapPin, Calendar, MessageSquare, ChevronLeft, ChevronRight, Plus, ExternalLink, AlertTriangle, X } from 'lucide-react';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
@@ -96,19 +97,13 @@ export default function StaffMyLeads() {
   const fetchCounts = useCallback(async () => {
     if (!userId) return;
     try {
-      const [allRes, resRes, qualRes, custRes, unqualRes] = await Promise.all([
-        leadService.getAll({ assignedTo: userId, limit: 1 }),
-        leadService.getAll({ assignedTo: userId, status: 'Open', limit: 1 }),
-        leadService.getAll({ assignedTo: userId, status: 'Qualified', limit: 1 }),
-        leadService.getAll({ assignedTo: userId, status: 'Customer', limit: 1 }),
-        leadService.getAll({ assignedTo: userId, status: 'Unqualified', limit: 1 }),
-      ]);
-
-      const allCount = allRes.total ?? allRes.count ?? (allRes.data || []).length;
-      const reservedCount = resRes.total ?? resRes.count ?? (resRes.data || []).length;
-      const qualCount = qualRes.total ?? qualRes.count ?? (qualRes.data || []).length;
-      const custCount = custRes.total ?? custRes.count ?? (custRes.data || []).length;
-      const unqualCount = unqualRes.total ?? unqualRes.count ?? (unqualRes.data || []).length;
+      const res = await leadService.getCounts();
+      const data = res.data || res;
+      const allCount = (data as any).All ?? (data as any).all ?? 0;
+      const reservedCount = (data as any).Reserved ?? (data as any).reserved ?? 0;
+      const qualCount = (data as any).Qualified ?? (data as any).qualified ?? 0;
+      const custCount = (data as any).Customer ?? (data as any).customer ?? 0;
+      const unqualCount = (data as any).Unqualified ?? (data as any).unqualified ?? 0;
 
       setCounts({
         All: allCount,
@@ -200,7 +195,7 @@ export default function StaffMyLeads() {
   }, [page, totalPages]);
 
   // Duplicate phone state
-  const [duplicateLead, setDuplicateLead] = useState<{ id: string; customerName: string; phone: string; status: string; assignedToName: string } | null>(null);
+  const [duplicateLead, setDuplicateLead] = useState<CheckPhoneLead | null>(null);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const lastCheckedPhoneRef = useRef<string>('');
 
@@ -312,15 +307,12 @@ export default function StaffMyLeads() {
       email: cEmail.trim() || 'info@crm.com',
       city: cCity,
       dob: cDob,
-      budgetMin: 500000,
-      budgetMax: 2000000,
       budget: cBudget.trim() || undefined,
       category: cCategory || undefined,
       propertyInterest: project ? project.category || 'Open Plots' : (cCategory || 'General Interest'),
       notes: cNotes.trim() || 'Direct lead creation by Staff',
       source: sourceVal,
       sourceType: cSourceType,
-      // Assign to self ONLY when source is Staff — otherwise leave unassigned (Open pool)
       assignedTo: isStaffSource ? userId : undefined,
       assignedToName: isStaffSource ? (user?.name || undefined) : undefined,
       status: isStaffSource ? 'Open' : cStatus,

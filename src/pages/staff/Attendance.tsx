@@ -5,7 +5,7 @@ import { ChevronRight, ChevronLeft, Search, X, Power, Check, Info, Clock, CheckC
 import { attendanceService, projectService } from '@/services';
 import { Modal } from '@/components/shared/Modal';
 import { toast } from 'sonner';
-import { matchesStatusFilter } from '@/pages/admin/Attendance';
+import { matchesStatusFilter } from '@/utils/attendanceFilters';
 
 const ACTIVITY_OPTIONS = ['On Duty', 'Projects', 'Bank', 'Outside Work', 'Office'];
 
@@ -118,23 +118,40 @@ export default function StaffAttendance() {
       setTotalCount(total);
       setTotalPages(Math.max(1, Math.ceil(total / itemsPerPage)));
 
-      // Detect active check-in session for today
-      const active = records.find(
-        r => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
-      );
-      if (active) {
-        setCheckedIn(true);
-        setActiveRecordId(active.id);
-        setActiveCheckInTime(active.checkIn === '—' || active.checkIn === '-' ? null : active.checkIn);
-        setActiveCheckInTs(
-          active.createdAt ? new Date(active.createdAt).getTime() : Date.now()
+      // Detect active check-in session for today — fetch today's record directly
+      // so the active session is detected even if it's not on the current page
+      try {
+        const todayRes = await attendanceService.getToday();
+        const todayRecord = (todayRes as any).data || todayRes;
+        if (todayRecord && todayRecord.date === todayDateStr && (!todayRecord.checkOut || todayRecord.checkOut === '—' || todayRecord.checkOut === '-')) {
+          setCheckedIn(true);
+          setActiveRecordId(todayRecord.id || todayRecord._id);
+          setActiveCheckInTime(todayRecord.checkIn === '—' || todayRecord.checkIn === '-' ? null : todayRecord.checkIn);
+          setActiveCheckInTs(todayRecord.createdAt ? new Date(todayRecord.createdAt).getTime() : Date.now());
+          setActiveActivityType(todayRecord.activityType || 'On Duty');
+          setActiveProjectId(todayRecord.projectId || '');
+          setActiveProjectName(todayRecord.projectName || '');
+          setActivityType(todayRecord.activityType || 'On Duty');
+          setSelectedProjectId(todayRecord.projectId || '');
+          setSelectedProjectName(todayRecord.projectName || '');
+        }
+      } catch {
+        // Fallback: check within current page records if /today endpoint fails
+        const active = records.find(
+          r => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
         );
-        setActiveActivityType(active.activityType || 'On Duty');
-        setActiveProjectId(active.projectId || '');
-        setActiveProjectName(active.projectName || '');
-        setActivityType(active.activityType || 'On Duty');
-        setSelectedProjectId(active.projectId || '');
-        setSelectedProjectName(active.projectName || '');
+        if (active) {
+          setCheckedIn(true);
+          setActiveRecordId(active.id);
+          setActiveCheckInTime(active.checkIn === '—' || active.checkIn === '-' ? null : active.checkIn);
+          setActiveCheckInTs(active.createdAt ? new Date(active.createdAt).getTime() : Date.now());
+          setActiveActivityType(active.activityType || 'On Duty');
+          setActiveProjectId(active.projectId || '');
+          setActiveProjectName(active.projectName || '');
+          setActivityType(active.activityType || 'On Duty');
+          setSelectedProjectId(active.projectId || '');
+          setSelectedProjectName(active.projectName || '');
+        }
       }
     } catch {
       // silent catch
@@ -165,7 +182,9 @@ export default function StaffAttendance() {
     const timeStr = nowDate.toLocaleTimeString('en-US', {
       hour: '2-digit', minute: '2-digit',
     });
-    const todayDate = nowDate.toISOString().split('T')[0];
+    // Use the local calendar date so the record is attributed to the user's business day,
+    // not the UTC date (avoids near-midnight misattribution).
+    const todayDate = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`;
 
     if (!checkedIn) {
       /* ---------- CHECK IN ---------- */
@@ -178,90 +197,48 @@ export default function StaffAttendance() {
         return;
       }
 
-      // Check if there is a recent record from today created less than 10 minutes ago
-      const recentRecord = monthlyRecords.find(r => {
-        if (r.date !== todayDateStr) return false;
-        if (!r.createdAt) return false;
-        const createdTs = new Date(r.createdAt).getTime();
-        return (now - createdTs) < (1000 * 60 * 10); // within 10 minutes
-      });
+      /* --- Each check-in creates a brand new attendance record.
+             The old 10-minute "session resume" merge is removed (issue 29). --- */
+      try {
+        const res = await attendanceService.create({
+          staffId: userId!,
+          staffName: user!.name,
+          date: todayDate,
+          checkIn: timeStr,
+          status: 'Present',
+          role: user!.designation,
+          activityType,
+          projectId: selectedProjectId || undefined,
+          projectName: selectedProjectName || undefined,
+        });
 
-      if (recentRecord) {
-        /* --- Within 10 minutes of previous record creation → Reopen & Update existing record --- */
-        try {
-          await attendanceService.update(recentRecord.id, {
-            activityType,
-            projectId: selectedProjectId || undefined,
-            projectName: selectedProjectName || undefined,
-            checkOut: '-',
-            duration: '-',
-          });
+        const record = (res as any).data || res;
+        const id = record.id || record._id;
 
-          const createdTs = recentRecord.createdAt ? new Date(recentRecord.createdAt).getTime() : now;
+        setCheckedIn(true);
+        setActiveRecordId(id);
+        setActiveCheckInTime(timeStr);
+        setActiveCheckInTs(now);
+        setActiveActivityType(activityType);
+        setActiveProjectId(selectedProjectId);
+        setActiveProjectName(selectedProjectName);
 
-          setCheckedIn(true);
-          setActiveRecordId(recentRecord.id);
-          setActiveCheckInTime(recentRecord.checkIn);
-          setActiveCheckInTs(createdTs);
-          setActiveActivityType(activityType);
-          setActiveProjectId(selectedProjectId);
-          setActiveProjectName(selectedProjectName);
+        addRecordToList({
+          id,
+          date: todayDate,
+          checkIn: timeStr,
+          checkOut: '—',
+          duration: '—',
+          status: 'Present',
+          activityType,
+          projectId: selectedProjectId || undefined,
+          projectName: selectedProjectName || undefined,
+          createdAt: nowDate.toISOString(),
+        });
 
-          updateRecordInList(recentRecord.id, {
-            activityType,
-            projectId: selectedProjectId || undefined,
-            projectName: selectedProjectName || undefined,
-            checkOut: '—',
-            duration: '—',
-          });
-
-          toast.success('Session resumed & activity updated');
-        } catch {
-          toast.error('Failed to update session');
-        }
-      } else {
-        /* --- More than 30 minutes since previous record OR first check-in → Create NEW Record --- */
-        try {
-          const res = await attendanceService.create({
-            staffId: userId!,
-            staffName: user!.name,
-            date: todayDate,
-            checkIn: timeStr,
-            status: 'Present',
-            role: user!.designation,
-            activityType,
-            projectId: selectedProjectId || undefined,
-            projectName: selectedProjectName || undefined,
-          });
-
-          const record = (res as any).data || res;
-          const id = record.id || record._id;
-
-          setCheckedIn(true);
-          setActiveRecordId(id);
-          setActiveCheckInTime(timeStr);
-          setActiveCheckInTs(now);
-          setActiveActivityType(activityType);
-          setActiveProjectId(selectedProjectId);
-          setActiveProjectName(selectedProjectName);
-
-          addRecordToList({
-            id,
-            date: todayDate,
-            checkIn: timeStr,
-            checkOut: '—',
-            duration: '—',
-            status: 'Present',
-            activityType,
-            projectId: selectedProjectId || undefined,
-            projectName: selectedProjectName || undefined,
-            createdAt: nowDate.toISOString(),
-          });
-
-          toast.success('Checked in successfully');
-        } catch {
-          toast.error('Failed to record check-in');
-        }
+        toast.success('Checked in successfully');
+      } catch {
+        toast.error('Failed to record check-in');
       }
     } else {
       /* ---------- CHECKED IN: ALWAYS CHECK OUT ---------- */
@@ -669,9 +646,9 @@ export default function StaffAttendance() {
           <div className="flex items-start gap-3 p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900">
             <RefreshCw size={20} className="text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold text-amber-900">10-Minute Session Resume Rule</p>
+              <p className="font-semibold text-amber-900">Each check-in creates a new session</p>
               <p className="text-xs text-amber-800 mt-0.5">
-                If you check out and check back in within <strong>10 minutes</strong>, your previous session will be resumed and updated with your newly selected activity or project.
+                Every time you tap <strong>Check In</strong>, a brand new attendance entry is created for today. No previous record is ever overwritten or merged.
               </p>
             </div>
           </div>
@@ -692,7 +669,7 @@ export default function StaffAttendance() {
               <div>
                 <p className="font-semibold text-slate-800">New Session Threshold</p>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  If more than <strong>10 minutes</strong> have passed since your last record was created, checking in will start a brand new attendance entry for today.
+                  Tapping <strong>Check In</strong> always starts a new attendance entry for today, regardless of when your previous entry was created.
                 </p>
               </div>
             </div>

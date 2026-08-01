@@ -88,19 +88,9 @@ export default function StaffFollowUps() {
         });
 
         if (!matched) {
-          updatedFollowUps = updatedFollowUps.map((fu: any, idx: number) => {
-            if (fu.date === editingItem.date || idx === updatedFollowUps.length - 1) {
-              return {
-                ...fu,
-                date: editDate,
-                outcome: editOutcome,
-                notes: editNotes,
-                nextAction: editNextAction,
-                nextFollowUpDate: editNextFollowUpDate || undefined,
-              };
-            }
-            return fu;
-          });
+          toast.error('Could not identify the follow-up to update. Please refresh and try again.');
+          setSavingEdit(false);
+          return;
         }
       } else {
         updatedFollowUps = [{
@@ -114,7 +104,7 @@ export default function StaffFollowUps() {
 
       await leadService.update(editingItem.leadId, {
         followUps: updatedFollowUps,
-        ...(editNextFollowUpDate ? { nextFollowUpDate: editNextFollowUpDate } : {}),
+        nextFollowUpDate: editNextFollowUpDate || null,
       });
 
       toast.success('Follow-up updated successfully!');

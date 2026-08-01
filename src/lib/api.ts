@@ -6,7 +6,13 @@ interface ApiResponse<T = unknown> {
   data: T;
   count?: number;
   total?: number;
-  pagination?: { next?: { page: number; limit: number }; prev?: { page: number; limit: number } };
+  pagination?: {
+    total?: number;
+    pages?: number;
+    currentPage?: number;
+    next?: { page: number; limit: number };
+    prev?: { page: number; limit: number };
+  };
   token?: string;
   error?: string;
 }
@@ -34,8 +40,10 @@ class ApiClient {
     this.clearToken();
     localStorage.removeItem('crm_role');
     localStorage.removeItem('crm_user');
-    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-      window.location.href = '/login';
+    // Soft redirect: notify the auth layer instead of a hard page reload so
+    // unsaved form input is preserved. AuthContext listens and clears state.
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('auth:unauthorized'));
     }
     throw new Error('Unauthorized');
   }
@@ -61,8 +69,14 @@ class ApiClient {
     const isAuthEndpoint = path.startsWith('/auth/');
     if (res.status === 401 && !isAuthEndpoint) this.handleUnauthorized();
 
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Request failed');
+    let json: ApiResponse<T>;
+    try {
+      json = await res.json();
+    } catch {
+      if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+      return { success: true, data: null as T } as ApiResponse<T>;
+    }
+    if (!res.ok) throw new Error((json as any).error || 'Request failed');
     return json;
   }
 
@@ -104,8 +118,14 @@ class ApiClient {
 
     if (res.status === 401 && !path.startsWith('/auth/')) this.handleUnauthorized();
 
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Upload failed');
+    let json: ApiResponse<T>;
+    try {
+      json = await res.json();
+    } catch {
+      if (!res.ok) throw new Error(`Upload failed with status ${res.status}`);
+      return { success: true, data: null as T } as ApiResponse<T>;
+    }
+    if (!res.ok) throw new Error((json as any).error || 'Upload failed');
     return json;
   }
 }

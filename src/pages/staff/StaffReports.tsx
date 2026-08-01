@@ -346,14 +346,7 @@ export default function StaffReports() {
         map.set(l.id || (l as any)._id, l);
       }
     });
-    if (map.size === 0) {
-      summaryLeads.forEach(l => {
-        if (l.sourceType === 'Staff' || (l as any).notes?.toLowerCase().includes('staff')) {
-          map.set(l.id || (l as any)._id, l);
-        }
-      });
-    }
-    return map.size || summaryLeads.length;
+    return map.size;
   }, [summaryLeads, summaryCreatedLeads, user?.name, userId]);
 
   const totalTasks = myTasksSummary.length;
