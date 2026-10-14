@@ -110,6 +110,9 @@ export interface Plot {
   };
   expectedRegistrationDate?: string;
   registrationDate?: string;
+  docNumber?: string;
+  isQuarantined?: boolean;
+  quarantineNotes?: string;
   assignedTo?: string;
   bookingDate?: string;
   selectedAt?: string;

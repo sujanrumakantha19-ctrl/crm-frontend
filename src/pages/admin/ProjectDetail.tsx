@@ -2342,6 +2342,18 @@ export default function AdminProjectDetail() {
                   <span className="block text-slate-400 font-bold uppercase text-[9px]">Size</span>
                   <span className="font-semibold text-slate-800">{selectedPlot.size} {selectedPlot.sizeUnit}</span>
                 </div>
+                {selectedPlot.docNumber && (
+                  <div className="col-span-2">
+                    <span className="block text-slate-400 font-bold uppercase text-[9px]">Document No</span>
+                    <span className="font-semibold text-slate-800">{selectedPlot.docNumber}</span>
+                  </div>
+                )}
+                {selectedPlot.isQuarantined && (
+                  <div className="col-span-2 p-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+                    <span className="font-bold block uppercase text-[10px] text-amber-900 mb-0.5">⚠️ Data Quarantine Notice</span>
+                    {selectedPlot.quarantineNotes || 'This plot has conflicting source records and is quarantined pending client review.'}
+                  </div>
+                )}
               </div>
             </div>
 
