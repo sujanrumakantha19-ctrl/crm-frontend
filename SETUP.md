@@ -49,7 +49,7 @@ Start the backend, then visit: http://localhost:5000/api-docs
 
 ### Frontend (`.env`)
 ```
-VITE_API_URL=https://crm-backend-5y4p.onrender.com/api/v1
+VITE_API_URL=https://samyandco.in/api/v1
 ```
 
 ### Backend (`backend/config/config.env`)
