@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Search, Users, Plus, AlertTriangle, X, CheckCircle, XCircle, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -12,14 +12,16 @@ import { useExportContext } from '@/context/ExportContext';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
+import { LEAD_PROJECT_LIST_PARAMS, getProjectId, isProjectSelectableForNewLead } from '@/lib/leadProjectOptions';
 import { leadService, userService, projectService, channelPartnerService } from '@/services';
 import type { CheckPhoneLead } from '@/services/leads';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import type { LeadStatus, Lead, User, Project } from '@/types';
 import { Empty, EmptyTitle, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
-import { getYesterdayStr, formatSource } from '@/lib/utils';
+import { getMaxDobStr, formatSource } from '@/lib/utils';
 import { CardSkeletonGrid, InfiniteScrollSpinner } from '@/components/shared/SkeletonLoader';
+import { normPhone10 } from '@/lib/customerBookingRows';
 
 const tabs: { key: string; label: string }[] = [
   { key: 'All', label: 'All Leads' },
@@ -37,12 +39,133 @@ function formatDate(dateStr?: string): string {
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+const isMongoHexId = (val?: any): boolean => {
+  if (!val) return false;
+  return typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val.trim());
+};
+
+export interface ResolvedLeadStaff {
+  name: string;
+  displayId?: string;
+}
+
+export function resolveLeadRep(lead: any, users?: User[]): ResolvedLeadStaff | null {
+  if (!lead) return null;
+  let name = '';
+  let displayId = '';
+
+  const lName = lead.assignedToName?.trim();
+  const lDisplay = lead.assignedToDisplayId?.trim();
+  if (lName && !isMongoHexId(lName)) name = lName;
+  if (lDisplay && !isMongoHexId(lDisplay)) displayId = lDisplay;
+
+  if (lead.assignedTo && typeof lead.assignedTo === 'object') {
+    const obj = lead.assignedTo as any;
+    if (!name && obj.name && !isMongoHexId(obj.name)) name = obj.name.trim();
+    if (!displayId && obj.displayId && !isMongoHexId(obj.displayId)) displayId = obj.displayId.trim();
+  }
+
+  const rawAssignedId = typeof lead.assignedTo === 'string' ? lead.assignedTo.trim() : '';
+
+  if (users && users.length > 0) {
+    const candidateIds = [rawAssignedId, lDisplay, displayId].filter(Boolean);
+    for (const cand of candidateIds) {
+      const found = users.find(u =>
+        String(u.id) === cand ||
+        (u as any)._id === cand ||
+        (u.displayId && u.displayId.toUpperCase() === cand.toUpperCase())
+      );
+      if (found) {
+        if (!name && found.name && !isMongoHexId(found.name)) name = found.name.trim();
+        if (!displayId && found.displayId) displayId = found.displayId.trim();
+      }
+    }
+  }
+
+  if (!name && rawAssignedId && !isMongoHexId(rawAssignedId) && !rawAssignedId.toUpperCase().startsWith('STAFF-')) {
+    name = rawAssignedId;
+  }
+
+  if (!name && !displayId) {
+    if (lead.assignedTo || lead.assignedToName || lead.assignedToDisplayId) {
+      return { name: 'Assigned' };
+    }
+    return null;
+  }
+
+  return { name, displayId };
+}
+
+export interface CollapsedLead extends Lead {
+  relatedBookingCount?: number;
+  relatedLeadDisplayIds?: string[];
+  relatedLeadIds?: string[];
+}
+
+export function collapseCustomerLeads(leads: Lead[]): CollapsedLead[] {
+  if (!leads || leads.length <= 1) {
+    return leads.map(l => ({
+      ...l,
+      relatedBookingCount: (l as any).relatedBookingCount || 1,
+      relatedLeadDisplayIds: (l as any).relatedLeadDisplayIds || (l.displayId ? [l.displayId] : []),
+      relatedLeadIds: (l as any).relatedLeadIds || [String(l.id || (l as any)._id || '')],
+    }));
+  }
+  const groups = new Map<string, CollapsedLead>();
+  for (const lead of leads) {
+    const rawDigits = normPhone10(lead.phone);
+    let key = '';
+    if (rawDigits && rawDigits !== '0000000000') {
+      key = `p:${rawDigits}`;
+    } else if (lead.displayId) {
+      key = `d:${String(lead.displayId).trim().toUpperCase()}`;
+    } else {
+      key = `n:${String(lead.customerName || '').toLowerCase().trim()}`;
+    }
+
+    if (!groups.has(key)) {
+      const item: CollapsedLead = {
+        ...lead,
+        relatedBookingCount: (lead as any).relatedBookingCount || 1,
+        relatedLeadDisplayIds: (lead as any).relatedLeadDisplayIds || (lead.displayId ? [lead.displayId] : []),
+        relatedLeadIds: (lead as any).relatedLeadIds || [String(lead.id || (lead as any)._id || '')],
+      };
+      groups.set(key, item);
+    } else {
+      const existing = groups.get(key)!;
+      existing.relatedBookingCount = (existing.relatedBookingCount || 1) + 1;
+      const dId = lead.displayId;
+      if (dId && !existing.relatedLeadDisplayIds?.includes(dId)) {
+        existing.relatedLeadDisplayIds?.push(dId);
+      }
+      const lid = String(lead.id || (lead as any)._id || '');
+      if (lid && !existing.relatedLeadIds?.includes(lid)) {
+        existing.relatedLeadIds?.push(lid);
+      }
+      if (!existing.assignedTo && lead.assignedTo) {
+        existing.assignedTo = lead.assignedTo;
+        existing.assignedToName = lead.assignedToName;
+        existing.assignedToDisplayId = lead.assignedToDisplayId;
+      }
+    }
+  }
+  return Array.from(groups.values());
+}
+
 export default function AdminLeads() {
   const PAGE_SIZE = 25;
   const { addNotification } = useNotifications();
   const { userId, user, role } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<string>('Open');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (urlTab) {
+      const found = tabs.find(t => t.key.toLowerCase() === urlTab.toLowerCase());
+      if (found) return found.key;
+    }
+    return 'Open';
+  });
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search);
   const [whatsAppLead, setWhatsAppLead] = useState<{ phone: string; name: string; projectName?: string } | null>(null);
@@ -70,7 +193,9 @@ export default function AdminLeads() {
 
   const fetchCounts = useCallback(async () => {
     try {
-      const res: any = await leadService.getCounts();
+      const res: any = await leadService.getCounts({
+        search: debouncedSearch.trim() || undefined,
+      });
       const data = res.data || res;
       const open = data.Open ?? 0;
       const reserved = data.Reserved ?? 0;
@@ -86,11 +211,15 @@ export default function AdminLeads() {
         Customer: cust,
       });
     } catch {}
-  }, []);
+  }, [debouncedSearch]);
 
   useEffect(() => {
     fetchCounts();
   }, [fetchCounts]);
+
+  const activeStaffUsers = useMemo(() => {
+    return staffUsers.filter(s => s.isActive !== false);
+  }, [staffUsers]);
 
   // Filtered leads calculation
   const filtered = useMemo(() => {
@@ -106,10 +235,57 @@ export default function AdminLeads() {
       } else {
         matchesTab = l.status === activeTab;
       }
-      const matchesSearch = !debouncedSearch || l.customerName.toLowerCase().includes(debouncedSearch.toLowerCase()) || l.phone.includes(debouncedSearch);
+      if (!debouncedSearch.trim()) return matchesTab;
+      const searchLower = debouncedSearch.trim().toLowerCase();
+      const searchDigits = debouncedSearch.replace(/\D/g, '');
+      const leadIdLower = l.displayId ? l.displayId.toLowerCase() : '';
+      const leadIdDigits = l.displayId ? l.displayId.replace(/\D/g, '') : '';
+
+      const rep = resolveLeadRep(l, staffUsers);
+      const staffIdLower = (rep?.displayId || l.assignedToDisplayId || '').toLowerCase();
+      const staffIdDigits = (rep?.displayId || l.assignedToDisplayId || '').replace(/\D/g, '');
+      const staffNameLower = (rep?.name || l.assignedToName || '').toLowerCase();
+
+      const staffPrefixMatch = searchLower.match(/^(?:staff|emp)[\s-]*0*(\d+)$/);
+      const isStaffQuery = !!staffPrefixMatch;
+      const targetStaffNum = staffPrefixMatch ? staffPrefixMatch[1] : '';
+
+      const matchesStaffId = (
+        (staffIdLower && staffIdLower.includes(searchLower)) ||
+        (staffIdLower && staffIdLower.replace(/[\s-_]/g, '').includes(searchLower.replace(/[\s-_]/g, ''))) ||
+        (isStaffQuery && staffIdDigits === targetStaffNum) ||
+        (searchDigits !== '' && staffIdDigits === searchDigits)
+      );
+      const matchesStaffName = staffNameLower.includes(searchLower);
+
+      const custPrefixMatch = searchLower.match(/^(?:l|c|cust|customer)[\s-]*0*(\d+)$/);
+      const targetCustNum = custPrefixMatch ? custPrefixMatch[1] : '';
+
+      const matchesLeadId = (
+        (leadIdLower && leadIdLower.includes(searchLower)) ||
+        (targetCustNum !== '' && leadIdDigits === targetCustNum) ||
+        (searchDigits !== '' && leadIdDigits === searchDigits)
+      );
+
+      const matchesSearch =
+        (l.customerName && l.customerName.toLowerCase().includes(searchLower)) ||
+        (l.phone && l.phone.includes(searchLower)) ||
+        matchesLeadId ||
+        matchesStaffId ||
+        matchesStaffName;
       return matchesTab && matchesSearch;
     });
-  }, [leadList, activeTab, debouncedSearch]);
+
+    if (activeTab === 'Customer') {
+      return collapseCustomerLeads(matched);
+    }
+    if (activeTab === 'All' && debouncedSearch.trim()) {
+      const custs = matched.filter(l => l.status === 'Customer');
+      const nonCusts = matched.filter(l => l.status !== 'Customer');
+      return [...collapseCustomerLeads(custs), ...nonCusts];
+    }
+    return matched;
+  }, [leadList, activeTab, debouncedSearch, staffUsers]);
 
   const tabCount = (key: string) => {
     return leadList.filter(l => {
@@ -119,6 +295,34 @@ export default function AdminLeads() {
       if (key === 'Reserved') return l.status === 'Open' && hasAssignee;
       return l.status === key;
     }).length;
+  };
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam) {
+      const match = tabs.find(t => t.key.toLowerCase() === tabParam.toLowerCase());
+      if (match && match.key !== activeTab) {
+        setActiveTab(match.key);
+        setLeadList([]);
+        setPage(1);
+        setHasMore(false);
+        setLoading(true);
+      }
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (key: string) => {
+    if (key === activeTab) return;
+    setActiveTab(key);
+    setLeadList([]);
+    setPage(1);
+    setHasMore(false);
+    setLoading(true);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', key);
+      return next;
+    }, { replace: true });
   };
 
   const fetchLeads = useCallback(async (pageToLoad = 1, replace = false) => {
@@ -133,17 +337,18 @@ export default function AdminLeads() {
         limit: PAGE_SIZE,
         page: pageToLoad,
         sort: '-createdAt',
-        search: debouncedSearch || undefined,
+        search: debouncedSearch.trim() || undefined,
       };
-      if (activeTab === 'All') {
-        // Fetch all leads without status filter
-      } else if (activeTab === 'Open') {
+      if (activeTab === 'Open') {
         queryParams.status = 'Open';
         queryParams.assignedTo = 'unassigned';
       } else if (activeTab === 'Reserved') {
         queryParams.status = 'Open';
         queryParams.assignedTo = 'assigned';
-      } else {
+      } else if (activeTab === 'Customer') {
+        queryParams.status = 'Customer';
+        queryParams.groupBy = 'customer';
+      } else if (activeTab !== 'All') {
         queryParams.status = activeTab;
       }
       const res = await leadService.getAll(queryParams);
@@ -157,11 +362,13 @@ export default function AdminLeads() {
       const pagination = (res as any).pagination;
       const nextExists = !!pagination?.next;
       setHasMore(nextExists || nextLeads.length === PAGE_SIZE);
-    } catch { /* ignore */ }
-    if (fetchTokenRef.current === requestToken) {
-      if (pageToLoad === 1) {
+    } catch {
+      if (fetchTokenRef.current === requestToken) {
+        setHasMore(false);
+      }
+    } finally {
+      if (fetchTokenRef.current === requestToken) {
         setLoading(false);
-      } else {
         setLoadingMore(false);
       }
     }
@@ -170,13 +377,13 @@ export default function AdminLeads() {
   useEffect(() => {
     setLeadList([]);
     setPage(1);
-    setHasMore(true);
+    setHasMore(false);
     void fetchLeads(1, true);
   }, [fetchLeads]);
 
   // Infinite scroll observer
   useEffect(() => {
-    if (loading || loadingMore || !hasMore) return;
+    if (loading || loadingMore || !hasMore || leadList.length === 0) return;
 
     const observer = new IntersectionObserver((entries) => {
       if (entries[0].isIntersecting && !loadingMore && hasMore) {
@@ -190,11 +397,11 @@ export default function AdminLeads() {
     return () => {
       observer.disconnect();
     };
-  }, [loading, loadingMore, hasMore, page, fetchLeads]);
+  }, [loading, loadingMore, hasMore, page, fetchLeads, leadList.length]);
 
   useEffect(() => {
     userService.getAll({ role: 'staff', limit: 100 }).then(r => setStaffUsers(r.data || [])).catch(() => {});
-    projectService.getAll({ limit: 100 }).then(r => setProjects(r.data || [])).catch(() => {});
+    projectService.getAll({ ...LEAD_PROJECT_LIST_PARAMS }).then(r => setProjects(r.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -271,9 +478,16 @@ export default function AdminLeads() {
 
   // Handle lead assignment
   const handleAssignLead = async () => {
-    if (!assignLead || !selectedStaffId) return;
+    if (!assignLead) return;
+    if (!selectedStaffId) {
+      toast.error('Please select a representative to assign this lead.');
+      return;
+    }
     const staff = staffUsers.find(s => (s.id || (s as unknown as {_id:string})._id) === selectedStaffId);
-    if (!staff) return;
+    if (!staff) {
+      toast.error('Selected representative not found. Please re-select.');
+      return;
+    }
 
     const leadId = assignLead.id || (assignLead as unknown as {_id:string})._id;
     const noteText = reassignNote.trim() ? `\n\n[Reassigned by Admin]: ${reassignNote.trim()}` : '';
@@ -282,12 +496,13 @@ export default function AdminLeads() {
       await leadService.update(leadId, {
         assignedTo: selectedStaffId,
         assignedToName: staff.name,
+        assignedToDisplayId: staff.displayId,
         notes: assignLead.notes ? `${assignLead.notes}${noteText}` : reassignNote.trim(),
       } as any);
 
       setLeadList(prev => prev.map(l => {
         const lid = l.id || (l as unknown as {_id:string})._id;
-        if (lid === leadId) return { ...l, assignedTo: selectedStaffId, assignedToName: staff.name };
+        if (lid === leadId) return { ...l, assignedTo: selectedStaffId, assignedToName: staff.name, assignedToDisplayId: staff.displayId };
         return l;
       }));
 
@@ -331,20 +546,24 @@ export default function AdminLeads() {
       return;
     }
 
-    if (cEmail.trim()) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(cEmail.trim())) {
-        setFormError('Please enter a valid email address.');
-        return;
-      }
+    if (!cEmail.trim()) {
+      setFormError('Email is required.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cEmail.trim())) {
+      setFormError('Please enter a valid email address.');
+      return;
     }
 
     if (cDob) {
       const selectedDate = new Date(cDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setFormError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setFormError('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
@@ -382,7 +601,7 @@ export default function AdminLeads() {
     const newLead: any = {
       customerName: cName.trim(),
       phone: cPhone.trim(),
-      email: cEmail.trim() || 'info@crm.com',
+      email: cEmail.trim().toLowerCase() || undefined,
       city: cCity,
       gender: cGender,
       dob: cDob,
@@ -394,6 +613,7 @@ export default function AdminLeads() {
       sourceType: cSourceType,
       assignedTo: staff ? (staff.id || (staff as unknown as {_id:string})._id) : undefined,
       assignedToName: staff?.name || undefined,
+      assignedToDisplayId: staff?.displayId || undefined,
       status: cSourceType === 'Staff' ? 'Open' : cStatus,
       dateAdded: new Date().toISOString().split('T')[0],
       projectId: projectId,
@@ -409,35 +629,38 @@ export default function AdminLeads() {
       fetchCounts();
       await fetchLeads(1, true);
       logActivity({ id: userId!, name: user!.name, role: role!, initials: user!.initials }, `Created lead`, 'Created', 'Lead', '', cName.trim());
+
+      // Notify assignee
+      if (staff) {
+        addNotification({
+          type: 'task_assigned',
+          message: `You have been assigned a new lead`,
+          actorName: user?.name || 'Admin',
+          entityType: 'Lead',
+          userId: cAssigneeId,
+        });
+      }
+
+      // Reset fields only after success
+      setCName('');
+      setCPhone('');
+      setCEmail('');
+      setCCity('Hyderabad');
+      setCNotes('');
+      setCSourceType('Direct');
+      setCSourceName('Direct Intake');
+      setCProjectId('');
+      setCAssigneeId('');
+      setCStatus('Open');
+      setCPaymentStatus('Not Paid');
+      setCDob('');
+      setFormError('');
+      setCreateOpen(false);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to create lead');
+      const msg = err.message || 'Failed to create lead';
+      setFormError(msg);
+      toast.error(msg);
     }
-
-    // Notify assignee
-    if (staff) {
-      addNotification({
-        type: 'task_assigned',
-        message: `You have been assigned a new lead`,
-        actorName: user?.name || 'Admin',
-        entityType: 'Lead',
-        userId: cAssigneeId,
-      });
-    }
-
-    // Reset fields
-    setCName('');
-    setCPhone('');
-    setCEmail('');
-    setCCity('Hyderabad');
-    setCNotes('');
-    setCSourceType('Direct');
-    setCSourceName('Direct Intake');
-    setCProjectId('');
-    setCAssigneeId('');
-    setCStatus('Open');
-    setCPaymentStatus('Not Paid');
-    setCDob('');
-    setCreateOpen(false);
   };
 
   // Mark lead as qualified
@@ -508,7 +731,7 @@ export default function AdminLeads() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search leads..."
+            placeholder="Search by name, phone, Lead ID (L-...), or Staff ID (STAFF-...)..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="pl-9 pr-3 h-9 w-full border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all"
@@ -520,7 +743,7 @@ export default function AdminLeads() {
           )}
         </div>
         <button 
-          onClick={() => setCreateOpen(true)}
+          onClick={() => { setFormError(''); setCreateOpen(true); }}
           className="flex items-center justify-center w-9 h-9 sm:w-auto sm:h-auto sm:px-4 sm:py-2 bg-brand-green text-white text-sm font-semibold rounded-md hover:bg-brand-darkgreen active:scale-[0.98] transition-all"
         >
           <Plus size={16} /><span className="hidden sm:inline ml-1.5">Add New Lead</span>
@@ -541,41 +764,34 @@ export default function AdminLeads() {
           {tabs.map(tab => (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => handleTabChange(tab.key)}
               className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
                 activeTab === tab.key
                   ? 'border-brand-green text-brand-blue font-bold'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {tab.label} <span className="text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full ml-1 font-semibold">{debouncedSearch ? (activeTab === tab.key ? filtered.length : tabCount(tab.key)) : (tabCounts[tab.key] ?? 0)}</span>
+              {tab.label} <span className="text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full ml-1 font-semibold">{tabCounts[tab.key] ?? 0}</span>
             </button>
           ))}
         </div>
       </div>
 
       {/* Leads Content */}
-      {loading && leadList.length === 0 ? (
+      {loading ? (
         <CardSkeletonGrid count={6} />
       ) : filtered.length === 0 ? (
-        hasMore ? (
-          <div className="bg-white border border-slate-200 rounded-lg py-16 flex flex-col items-center justify-center gap-3">
-            <div ref={loaderRef} className="w-8 h-8 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-slate-500">Loading more leads...</p>
-          </div>
-        ) : (
-          <Empty className="bg-white border border-slate-200 py-16">
-            <EmptyHeader>
-              <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-2 mx-auto">
-                <Users className="text-slate-400" size={24} />
-              </div>
-              <EmptyTitle>No {activeTab.toLowerCase()} leads found</EmptyTitle>
-              <EmptyDescription>
-                We couldn't find any {activeTab.toLowerCase()} leads matching your search criteria.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        )
+        <Empty className="bg-white border border-slate-200 py-16">
+          <EmptyHeader>
+            <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-2 mx-auto">
+              <Users className="text-slate-400" size={24} />
+            </div>
+            <EmptyTitle>No {activeTab.toLowerCase()} leads found</EmptyTitle>
+            <EmptyDescription>
+              We couldn't find any {activeTab.toLowerCase()} leads matching your search criteria.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map(lead => (
@@ -605,26 +821,53 @@ export default function AdminLeads() {
                           </svg>
                         </button>
                       </div>
-                      <p className="text-xs text-slate-550 font-bold">ID: {lead.displayId || lead.id}</p>
+                      <p className="text-xs text-slate-550 font-bold">
+                        ID: {lead.displayId || lead.id}
+                        {((lead as any).relatedLeadDisplayIds && (lead as any).relatedLeadDisplayIds.length > 1) && (
+                          <span className="text-[10px] text-slate-400 font-normal ml-1">
+                            (+{(lead as any).relatedLeadDisplayIds.length - 1} more)
+                          </span>
+                        )}
+                      </p>
                     </div>
                   </div>
                   <StatusBadge status={lead.status} size="sm" />
                 </div>
                 <div className="space-y-2 mb-4">
-                  <span className="inline-flex items-center text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded">
-                    Source: {formatSource(lead.sourceType, lead.source)}
-                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="inline-flex items-center text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded">
+                      Source: {formatSource(lead.sourceType, lead.source)}
+                    </span>
+                    {((lead as any).relatedBookingCount && (lead as any).relatedBookingCount > 1) ? (
+                      <span
+                        className="inline-flex items-center text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded"
+                        title={`Bookings: ${(lead as any).relatedLeadDisplayIds?.join(', ') || ''}`}
+                      >
+                        {(lead as any).relatedBookingCount} Bookings
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="flex items-center justify-between text-xs text-slate-500">
                     <span>Referred on {formatDate(lead.dateAdded)}</span>
-                    {lead.assignedToName ? (
-                      <span className="font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
-                        Rep: {lead.assignedToDisplayId || lead.assignedToName}
-                      </span>
-                    ) : (
-                      <span className="text-amber-600 font-semibold bg-amber-50 border border-amber-100 px-2 py-0.5 rounded">
-                        Unassigned
-                      </span>
-                    )}
+                    {(() => {
+                      const rep = resolveLeadRep(lead, staffUsers);
+                      if (!rep) {
+                        return (
+                          <span className="text-amber-600 font-semibold bg-amber-50 border border-amber-100 px-2 py-0.5 rounded text-xs">
+                            Unassigned
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded text-xs inline-flex items-center gap-1 max-w-[200px] truncate" title={rep.name && rep.displayId ? `${rep.name} (${rep.displayId})` : (rep.name || rep.displayId)}>
+                          <span className="text-slate-500 font-normal">Rep:</span>
+                          <span className="text-slate-900 font-bold truncate">{rep.name || rep.displayId}</span>
+                          {rep.name && rep.displayId && (
+                            <span className="text-slate-500 font-medium text-[11px] shrink-0">({rep.displayId})</span>
+                          )}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -663,15 +906,7 @@ export default function AdminLeads() {
                     </button>
                   </>
                 )}
-                {activeTab === 'Qualified' && (
-                  <button 
-                    onClick={() => navigate(`/admin/leads/${lead.id || (lead as any)._id}`)}
-                    className="w-full py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded hover:bg-slate-50 transition-colors text-center"
-                  >
-                    View
-                  </button>
-                )}
-                {activeTab === 'Unqualified' && (
+                {(activeTab === 'All' || activeTab === 'Qualified' || activeTab === 'Unqualified') && (
                   <button 
                     onClick={() => navigate(`/admin/leads/${lead.id || (lead as any)._id}`)}
                     className="w-full py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded hover:bg-slate-50 transition-colors text-center"
@@ -754,7 +989,7 @@ export default function AdminLeads() {
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm bg-white focus:border-brand-green outline-none transition-all"
               >
                 <option value="">Choose representative...</option>
-                {staffUsers.map(s => (
+                {activeStaffUsers.map(s => (
                   <option key={s.id} value={s.id}>{s.name} — {s.designation}</option>
                 ))}
               </select>
@@ -864,9 +1099,15 @@ export default function AdminLeads() {
                       </span>
                     </div>
                     <div>
-                        <span className="text-slate-500 font-medium">Assigned To:</span>{' '}
-                        <span className="font-semibold text-slate-800">{duplicateLead.assignedToDisplayId || duplicateLead.assignedToName}</span>
-                      </div>
+                      <span className="text-slate-500 font-medium">Assigned To:</span>{' '}
+                      <span className="font-semibold text-slate-800">
+                        {(() => {
+                          const rep = resolveLeadRep(duplicateLead as any, staffUsers);
+                          if (!rep) return 'Unassigned';
+                          return rep.name && rep.displayId ? `${rep.name} (${rep.displayId})` : (rep.name || rep.displayId);
+                        })()}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-[10px] text-amber-800 font-medium italic">
                     Click "Clear Number" above to enter a new mobile number.
@@ -877,12 +1118,12 @@ export default function AdminLeads() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Email Address</label>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Email Address <span className="text-red-500 font-bold">*</span></label>
                 <input
                   type="email"
                   placeholder="Enter email address"
                   value={cEmail}
-                  onChange={e => setCEmail(e.target.value)}
+                  onChange={e => setCEmail(e.target.value.toLowerCase())}
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs focus:border-brand-green outline-none transition-all bg-white"
                 />
               </div>
@@ -917,12 +1158,12 @@ export default function AdminLeads() {
                 <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Date of Birth</label>
                 <input
                   type="date"
-                  max={getYesterdayStr()}
+                  max={getMaxDobStr()}
                   value={cDob}
                   onChange={e => {
                     const val = e.target.value;
-                    if (val && val > getYesterdayStr()) {
-                      toast.error('Date of Birth cannot be today or a future date.');
+                    if (val && val > getMaxDobStr()) {
+                      toast.error('Date of Birth indicates age must be at least 18 years.');
                       setCDob('');
                     } else {
                       setCDob(val);
@@ -971,7 +1212,7 @@ export default function AdminLeads() {
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs bg-white focus:border-brand-green outline-none transition-all"
                 >
                   <option value="">Choose Staff Member...</option>
-                  {staffUsers.map(s => (
+                  {activeStaffUsers.map(s => (
                     <option key={s.id || (s as any)._id} value={s.name}>{s.name}{s.displayId ? ` [${s.displayId}]` : ''}</option>
                   ))}
                 </select>
@@ -1032,7 +1273,7 @@ export default function AdminLeads() {
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs bg-white focus:border-brand-green outline-none transition-all"
                 >
                   <option value="">Choose Staff...</option>
-                  {staffUsers.map(s => (
+                  {activeStaffUsers.map(s => (
                     <option key={s.id} value={s.id}>{s.name}{s.displayId ? ` [${s.displayId}]` : ''} — {s.designation}</option>
                   ))}
                 </select>
@@ -1048,8 +1289,8 @@ export default function AdminLeads() {
                 className="w-full h-9 px-3 border border-slate-200 rounded text-xs bg-white focus:border-brand-green outline-none transition-all"
               >
                 <option value="">General (No specific project)</option>
-                {projects.filter(p => p.id === cProjectId || !p.status || p.status.toLowerCase() === 'active').map(p => (
-                  <option key={p.id} value={p.id}>{p.name}{p.displayId ? ` [${p.displayId}]` : ''}</option>
+                {projects.filter(p => isProjectSelectableForNewLead(p, cProjectId)).map(p => (
+                  <option key={getProjectId(p)} value={getProjectId(p)}>{p.name}{p.displayId ? ` [${p.displayId}]` : ''}</option>
                 ))}
               </select>
             </div>

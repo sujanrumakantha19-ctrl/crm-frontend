@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Phone, Mail, Calendar, Building2, Users } from 'lucide-react';
 import { Avatar } from '@/components/shared/Avatar';
+import { ChangePasswordCard } from '@/components/ChangePasswordCard';
 import { useAuth } from '@/context/AuthContext';
 import { userService } from '@/services';
 import { getInitials, getAvatarColor } from '@/data/mockData';
@@ -110,6 +111,8 @@ export default function PartnerProfile() {
           <p className="text-sm text-slate-800">{(user as any)?.gender || '—'}</p>
         </div>
       </div>
+
+      <ChangePasswordCard />
     </div>
   );
 }

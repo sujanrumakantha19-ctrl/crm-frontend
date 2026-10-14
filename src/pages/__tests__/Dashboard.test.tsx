@@ -5,10 +5,42 @@ import AdminDashboard from '@/pages/admin/Dashboard'
 // ─── Mock all services ────────────────────────────────────────────
 vi.mock('@/services', () => ({
   projectService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
-  leadService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  leadService: {
+    getAll: vi.fn().mockResolvedValue({ data: [] }),
+    getCounts: vi.fn().mockResolvedValue({ data: { All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 } }),
+  },
+  plotService: {
+    getAll: vi.fn().mockResolvedValue({ data: [] }),
+    getByStatus: vi.fn().mockResolvedValue({ data: [], total: 0 }),
+  },
   attendanceService: { getToday: vi.fn().mockResolvedValue({ data: [] }) },
   activityLogService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   userService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  reportService: {
+    getSummary: vi.fn().mockResolvedValue({ data: { totalProjects: 0 } }),
+    getOperationsMetrics: vi.fn().mockResolvedValue({
+      data: {
+        totalLoans: 0,
+        registrationPending: 0,
+        totalBookings: 0,
+        todaysRegistrations: 0,
+        pendingPaymentRegistrations: 0,
+        bookingPayments: { notPaid: 0, partiallyPaid: 0, advancePaid: 0, advanceNotPaid: 0 },
+      },
+    }),
+    getDashboardLeadCharts: vi.fn().mockResolvedValue({
+      data: {
+        monthlyTrend: [],
+        sourceBreakdown: [
+          { name: 'Channel Partners', value: 0, color: '#3B82F6', count: 0 },
+          { name: 'Staff Added', value: 0, color: '#F59E0B', count: 0 },
+          { name: 'Admin Added', value: 0, color: '#10B981', count: 0 },
+          { name: 'Others', value: 0, color: '#8B5CF6', count: 0 },
+        ],
+        totalLeads: 0,
+      },
+    }),
+  },
 }))
 
 // ─── Mock Recharts (doesn't render in jsdom) ──────────────────────

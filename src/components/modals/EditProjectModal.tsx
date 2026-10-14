@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { Upload, X, Map, Plus, Trash2 } from 'lucide-react';
+import { useState, useEffect, type ReactNode } from 'react';
+import { Upload, X, Map as MapIcon, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '@/components/shared/Modal';
 import { toast } from 'sonner';
 import type { Project } from '@/types';
@@ -8,7 +8,7 @@ interface EditProjectModalProps {
   open: boolean;
   onClose: () => void;
   project: Project;
-  onSave: (updated: Project) => void;
+  onSave: (updated: Project) => Promise<void> | void;
 }
 
 
@@ -39,49 +39,81 @@ export function EditProjectModal({ open, onClose, project, onSave }: EditProject
   const [totalLandArea, setTotalLandArea] = useState(project.totalLandArea);
   const [landAreaUnit, setLandAreaUnit] = useState(project.landAreaUnit);
   const [surveyNumber, setSurveyNumber] = useState(project.surveyNumber);
+  const [dtcpNumber, setDtcpNumber] = useState(project.dtcpNumber || '');
   const [village, setVillage] = useState(project.village);
-  const [mandal] = useState(project.mandal);
+  const [mandal, setMandal] = useState(project.mandal || '');
   const [district, setDistrict] = useState(project.district);
   const [landType, setLandType] = useState(project.landType);
-  const [totalPlots, setTotalPlots] = useState(project.totalPlots);
+  const displayPlots = project.inventoryPlotCount ?? project.totalPlots ?? 0;
+  const [saving, setSaving] = useState(false);
   const inputClass = 'w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all';
   const selectClass = 'w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all bg-white';
   const textareaClass = 'w-full px-3 py-2 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-y min-h-[80px]';
 
-  const handleSave = () => {
+  useEffect(() => {
+    if (!open) return;
+    setName(project.name);
+    setLocation(project.location);
+    setLatitude(project.latitude || '');
+    setLongitude(project.longitude || '');
+    setDescription(project.description);
+    setStatus(project.status);
+    setCategory(project.category || 'Open Plots');
+    setIsEnabled(project.isEnabled !== false);
+    setTotalLandArea(project.totalLandArea);
+    setLandAreaUnit(project.landAreaUnit);
+    setSurveyNumber(project.surveyNumber);
+    setDtcpNumber(project.dtcpNumber || '');
+    setVillage(project.village);
+    setMandal(project.mandal || '');
+    setDistrict(project.district);
+    setLandType(project.landType);
+  }, [open, project]);
+
+  const handleSave = async () => {
     if (!name.trim()) { toast.error('Project Name is required.'); return; }
     if (!location.trim()) { toast.error('Project Location is required.'); return; }
-    onSave({
-      ...project,
-      name,
-      location,
-      latitude,
-      longitude,
-      description,
-      status,
-      category,
-      isEnabled,
-      totalLandArea: Number(totalLandArea),
-      landAreaUnit,
-      surveyNumber,
-      village,
-      mandal,
-      district,
-      landType,
-      totalPlots: Number(totalPlots),
-    });
-    onClose();
+
+    setSaving(true);
+    try {
+      await onSave({
+        ...project,
+        name: name.trim(),
+        location: location.trim(),
+        latitude,
+        longitude,
+        description,
+        status,
+        category,
+        isEnabled,
+        totalLandArea: Number(totalLandArea),
+        landAreaUnit,
+        surveyNumber,
+        dtcpNumber: dtcpNumber.trim(),
+        village,
+        mandal,
+        district,
+        landType,
+        totalPlots: project.totalPlots,
+      });
+      onClose();
+    } catch {
+      // Error is caught by caller toast, keep modal open on failure
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <>
-      <Modal open={open} onClose={onClose} title="Edit Project Details" size="md" footer={
+      <Modal open={open} onClose={() => { if (!saving) onClose(); }} title="Edit Project Details" size="md" footer={
         <>
-          <button onClick={onClose} className="px-4 py-2 border border-slate-200 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+          <button onClick={onClose} disabled={saving} className="px-4 py-2 border border-slate-200 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">
             Cancel
           </button>
-          <button onClick={handleSave} className="px-4 py-2 bg-brand-green text-white rounded-md text-sm font-medium hover:bg-brand-darkgreen active:scale-[0.98] transition-all">
-            Save Changes
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-green text-white rounded-md text-sm font-medium hover:bg-brand-darkgreen active:scale-[0.98] disabled:opacity-60 transition-all flex items-center gap-2">
+            {saving && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+            <span>{saving ? 'Saving...' : 'Save Changes'}</span>
           </button>
         </>
       }>
@@ -112,7 +144,7 @@ export function EditProjectModal({ open, onClose, project, onSave }: EditProject
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-brand-blue disabled:opacity-40 disabled:hover:text-slate-400 transition-colors"
                     title={latitude && longitude ? "View on Map" : "Enter latitude & longitude to view map"}
                   >
-                    <Map size={16} />
+                    <MapIcon size={16} />
                   </button>
                 </div>
               </div>
@@ -141,7 +173,7 @@ export function EditProjectModal({ open, onClose, project, onSave }: EditProject
           {/* Section 2 - Land Details */}
           <div className="pb-5 border-b border-slate-100">
             <SectionTitle>Land Details</SectionTitle>
-            <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Total Land Area">
                 <div className="flex gap-2">
                   <input type="number" value={totalLandArea} onChange={e => setTotalLandArea(Number(e.target.value))} className={inputClass} />
@@ -154,10 +186,24 @@ export function EditProjectModal({ open, onClose, project, onSave }: EditProject
                   </select>
                 </div>
               </Field>
+              <Field label="Total Number of Plots">
+                <input
+                  type="number"
+                  disabled
+                  value={displayPlots}
+                  className={`${inputClass} bg-slate-100 text-slate-500 cursor-not-allowed select-none`}
+                  title="Total plots count is managed via Plot Map / Plot Inventory"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">Managed via Plot Inventory</p>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Survey Number"><input type="text" value={surveyNumber} onChange={e => setSurveyNumber(e.target.value)} className={inputClass} /></Field>
+              <Field label="DTCP Number"><input type="text" value={dtcpNumber} onChange={e => setDtcpNumber(e.target.value)} placeholder="Optional" className={inputClass} /></Field>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="Survey Number"><input type="text" value={surveyNumber} onChange={e => setSurveyNumber(e.target.value)} className={inputClass} /></Field>
               <Field label="Village"><input type="text" value={village} onChange={e => setVillage(e.target.value)} className={inputClass} /></Field>
+              <Field label="Mandal"><input type="text" value={mandal} onChange={e => setMandal(e.target.value)} className={inputClass} /></Field>
               <Field label="District"><input type="text" value={district} onChange={e => setDistrict(e.target.value)} className={inputClass} /></Field>
             </div>
             <Field label="Land Type">

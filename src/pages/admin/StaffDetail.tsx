@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Briefcase, Mail, Phone, Users, Calendar, TrendingUp, UserCheck, ChevronLeft, ChevronRight, User as UserIcon, Pencil, AlertCircle } from 'lucide-react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Briefcase, Mail, Phone, Users, Calendar, TrendingUp, UserCheck, ChevronLeft, ChevronRight, User as UserIcon, Pencil, AlertCircle, Trash2 } from 'lucide-react';
 import { Avatar } from '@/components/shared/Avatar';
 import { NameTag } from '@/components/shared/NameTag';
 import { StatusBadge } from '@/components/shared/StatusBadge';
@@ -9,8 +9,11 @@ import { Modal } from '@/components/shared/Modal';
 import { getAvatarColor, getInitials } from '@/data/mockData';
 import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
 import { userService, groupService, leadService, taskService, activityLogService, attendanceService } from '@/services';
+import { useAuth } from '@/context/AuthContext';
+import { logActivity } from '@/lib/activityLogger';
 import type { ActivityLog, User, Group, Lead, Task, AttendanceRecord } from '@/types';
 import { toast } from 'sonner';
+import { getMaxDobStr } from '@/lib/utils';
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '—';
@@ -21,11 +24,17 @@ function formatDate(dateStr?: string): string {
 
 export default function AdminStaffDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { userId, user, role } = useAuth();
   const [staff, setStaff] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'leads' | 'tasks' | 'activity'>('overview');
+
+  // Delete confirmation state
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Tab Data & Lazy Loading States
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -202,11 +211,6 @@ export default function AdminStaffDetail() {
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
 
-  const getYesterdayStr = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
-  };
 
   const handleOpenEdit = () => {
     if (!staff) return;
@@ -237,10 +241,11 @@ export default function AdminStaffDetail() {
 
     if (editDob) {
       const selectedDate = new Date(editDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setEditError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setEditError('Date of Birth indicates age must be at least 18 years.');
         setSavingEdit(false);
         return;
       }
@@ -250,7 +255,7 @@ export default function AdminStaffDetail() {
       const updatedData = {
         name: editName.trim(),
         phone: cleanPhone,
-        email: editEmail.trim() || undefined,
+        email: editEmail.trim().toLowerCase() || undefined,
         designation: 'Staff Member',
         dob: editDob || undefined,
         gender: editGender,
@@ -267,6 +272,29 @@ export default function AdminStaffDetail() {
       setEditError(err.message || 'Failed to update staff member');
     } finally {
       setSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!staff) return;
+    const sid = staff.id || (staff as any)._id;
+    setDeleting(true);
+    try {
+      await userService.delete(sid);
+      toast.success(`Staff member "${staff.name}" deleted successfully.`);
+      logActivity(
+        { id: userId!, name: user!.name, role: role!, initials: user!.initials },
+        `Deleted staff member "${staff.name}"`,
+        'Deleted',
+        'Staff',
+        sid,
+        staff.name
+      );
+      navigate('/admin/staff');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete staff member');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -308,12 +336,21 @@ export default function AdminStaffDetail() {
               </div>
             </div>
           </div>
-          <button
-            onClick={handleOpenEdit}
-            className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 text-slate-700 bg-white text-xs font-semibold rounded-lg hover:bg-slate-50 transition-all shadow-xs shrink-0 self-start lg:self-auto"
-          >
-            <Pencil size={14} className="text-slate-500" /> Edit Staff
-          </button>
+          <div className="flex items-center gap-2 shrink-0 self-start lg:self-auto">
+            <button
+              onClick={handleOpenEdit}
+              className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 text-slate-700 bg-white text-xs font-semibold rounded-lg hover:bg-slate-50 transition-all shadow-xs"
+            >
+              <Pencil size={14} className="text-slate-500" /> Edit Staff
+            </button>
+            <button
+              onClick={() => setDeleteConfirmOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 border border-red-200 text-red-600 bg-red-50 text-xs font-semibold rounded-lg hover:bg-red-100 transition-all shadow-xs"
+              title="Delete Staff"
+            >
+              <Trash2 size={14} className="text-red-600" /> Delete Staff
+            </button>
+          </div>
         </div>
       </div>
 
@@ -626,7 +663,7 @@ export default function AdminStaffDetail() {
                 type="email" 
                 placeholder="email@example.com" 
                 value={editEmail}
-                onChange={e => setEditEmail(e.target.value)}
+                onChange={e => setEditEmail(e.target.value.toLowerCase())}
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" 
               />
             </div>
@@ -634,12 +671,12 @@ export default function AdminStaffDetail() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={editDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setEditDob('');
                   } else {
                     setEditDob(val);
@@ -684,6 +721,64 @@ export default function AdminStaffDetail() {
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </select>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete Staff Confirmation Modal */}
+      {deleteConfirmOpen && staff && (
+        <Modal
+          open={deleteConfirmOpen}
+          onClose={() => !deleting && setDeleteConfirmOpen(false)}
+          title="Delete Staff Member"
+          size="md"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={deleting}
+                className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {deleting && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {deleting ? 'Deleting...' : 'Delete Staff Member'}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-800 text-xs leading-relaxed">
+              <AlertCircle size={18} className="shrink-0 text-red-600 mt-0.5" />
+              <div>
+                <p className="font-semibold text-red-900 text-sm">Warning: This action is permanent</p>
+                <p className="mt-1">
+                  Are you sure you want to delete <span className="font-bold">{staff.name}</span> ({staff.displayId || (staff as any).employeeId || 'Staff'})? This will permanently remove their login account.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 space-y-2 text-xs text-slate-600">
+              <p className="font-semibold text-slate-800">What happens to their assigned data:</p>
+              <ul className="list-disc list-inside space-y-1 text-slate-600">
+                <li>
+                  <span className="font-semibold text-slate-800">{(summaryMetrics.openLeads + summaryMetrics.qualifiedLeads + summaryMetrics.unqualified)} active leads</span> and <span className="font-semibold text-slate-800">{summaryMetrics.customers} customers</span> will become <span className="font-semibold text-amber-700">Unassigned</span> (no lead or customer records will be deleted).
+                </li>
+                <li>
+                  You can immediately reassign these leads and customers to other active staff members from the Leads page.
+                </li>
+                <li>
+                  The staff member will be cleanly removed from any assigned groups and tasks.
+                </li>
+              </ul>
             </div>
           </div>
         </Modal>

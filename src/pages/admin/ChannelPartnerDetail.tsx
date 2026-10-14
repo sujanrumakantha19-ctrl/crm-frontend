@@ -11,6 +11,7 @@ import { channelPartnerService, userService, leadService, activityLogService } f
 import type { ActivityLog, ChannelPartner, Lead } from '@/types';
 import { NameTag } from '@/components/shared/NameTag';
 import { toast } from 'sonner';
+import { getMaxDobStr } from '@/lib/utils';
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '—';
@@ -175,11 +176,6 @@ export default function AdminChannelPartnerDetail() {
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
 
-  const getYesterdayStr = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
-  };
 
   const handleOpenEdit = () => {
     if (!partner) return;
@@ -210,10 +206,11 @@ export default function AdminChannelPartnerDetail() {
 
     if (editDob) {
       const selectedDate = new Date(editDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setEditError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setEditError('Date of Birth indicates age must be at least 18 years.');
         setSavingEdit(false);
         return;
       }
@@ -224,7 +221,7 @@ export default function AdminChannelPartnerDetail() {
         name: editName.trim(),
         companyName: editName.trim(),
         phone: cleanPhone,
-        email: editEmail.trim() || undefined,
+        email: editEmail.trim().toLowerCase() || undefined,
         city: editCity.trim() || undefined,
         gender: editGender,
         dob: editDob || undefined,
@@ -528,7 +525,7 @@ export default function AdminChannelPartnerDetail() {
                 type="email" 
                 placeholder="email@example.com" 
                 value={editEmail}
-                onChange={e => setEditEmail(e.target.value)}
+                onChange={e => setEditEmail(e.target.value.toLowerCase())}
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" 
               />
             </div>
@@ -561,12 +558,12 @@ export default function AdminChannelPartnerDetail() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={editDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setEditDob('');
                   } else {
                     setEditDob(val);

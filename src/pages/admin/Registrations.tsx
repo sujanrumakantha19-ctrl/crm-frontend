@@ -14,6 +14,15 @@ import { useAuth } from '@/context/AuthContext';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { toast } from 'sonner';
 import { getTodayStr } from '@/lib/utils';
+import {
+  relatedExtraFromPlot,
+  asEntityId,
+  formatBookingSelectLabel,
+  resolveProjectForPlot,
+  unionMergeByKeys,
+  mergePlotCustomerRows,
+  customerIdentityKeys,
+} from '@/lib/customerBookingRows';
 import type { Plot, Project } from '@/types';
 
 /* ─── constants ─── */
@@ -31,6 +40,54 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'customer_name', label: 'Customer Name (A-Z)' },
   { value: 'expected_date', label: 'Expected Date' },
 ];
+
+type LeadLike = { displayId?: string; customerName?: string; phone?: string; _id?: string; id?: string } | null;
+
+function normPhone10(phone?: string): string {
+  if (!phone) return '';
+  return phone.replace(/\D/g, '').slice(-10);
+}
+
+function plotRecordId(plot: Plot): string {
+  return asEntityId(plot.id || (plot as { _id?: string })._id);
+}
+
+function uniquePlotsById(list: Plot[]): Plot[] {
+  const seen = new Set<string>();
+  const out: Plot[] = [];
+  list.forEach((p) => {
+    const id = plotRecordId(p);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(p);
+  });
+  return out;
+}
+
+function plotsForEditModal(source: Plot[], current: Plot, _tab?: TabType): Plot[] {
+  return uniquePlotsById([current, ...source]).filter((p) =>
+    ['Booked', 'Registered', 'Pending'].includes(p.status)
+  );
+}
+
+function resolveCustomerDisplayId(
+  plot: Plot,
+  matchedLead: LeadLike,
+  displayIdByPhone: Map<string, string>,
+): string | undefined {
+  const direct =
+    matchedLead?.displayId ||
+    (plot as { leadInfo?: { displayId?: string } }).leadInfo?.displayId;
+  if (direct) return direct;
+
+  const phone =
+    plot.bookedBy?.phone ||
+    matchedLead?.phone ||
+    (plot as { leadInfo?: { phone?: string } }).leadInfo?.phone;
+  const key = normPhone10(phone);
+  if (key && displayIdByPhone.has(key)) return displayIdByPhone.get(key);
+  return undefined;
+}
 
 interface Filters {
   search: string;
@@ -141,6 +198,100 @@ const getDaysPassedFromBooking = (plot: Plot, matchedLead?: any): number | null 
   }
 };
 
+const isMongoHexId = (val?: any): boolean => {
+  if (!val) return false;
+  return typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val.trim());
+};
+
+interface ResolvedStaff {
+  name: string;
+  displayId?: string;
+}
+
+const resolveAssignedStaff = (
+  plot: Plot,
+  matchedLead?: any,
+  users?: { id: string; name: string; displayId?: string; role: string }[]
+): ResolvedStaff => {
+  let name = '';
+  let displayId = '';
+
+  // 1. Direct bookedBy staff info
+  const bStaffName = plot.bookedBy?.staffName?.trim();
+  const bStaffDisplay = plot.bookedBy?.staffDisplayId?.trim();
+  if (bStaffName && !isMongoHexId(bStaffName)) {
+    name = bStaffName;
+  }
+  if (bStaffDisplay && !isMongoHexId(bStaffDisplay)) {
+    displayId = bStaffDisplay;
+  }
+
+  // 2. Direct assignedToName on plot
+  const pAssignedName = (plot as any).assignedToName?.trim();
+  const pAssignedDisplay = (plot as any).assignedToDisplayId?.trim();
+  if (!name && pAssignedName && !isMongoHexId(pAssignedName)) {
+    name = pAssignedName;
+  }
+  if (!displayId && pAssignedDisplay && !isMongoHexId(pAssignedDisplay)) {
+    displayId = pAssignedDisplay;
+  }
+
+  // 3. Matched lead staff info
+  const lStaffName = matchedLead?.assignedToName?.trim();
+  const lStaffDisplay = matchedLead?.assignedToDisplayId?.trim();
+  if (!name && lStaffName && !isMongoHexId(lStaffName)) {
+    name = lStaffName;
+  }
+  if (!displayId && lStaffDisplay && !isMongoHexId(lStaffDisplay)) {
+    displayId = lStaffDisplay;
+  }
+
+  // 4. Candidate user IDs lookup in users (matching by ObjectId, displayId, or id)
+  const candidateIds = [
+    plot.assignedTo,
+    plot.bookedBy?.staffId,
+    matchedLead?.assignedTo,
+    displayId,
+  ].filter(Boolean).map(id => String(id).trim());
+
+  if (users && users.length > 0) {
+    for (const cand of candidateIds) {
+      const found = users.find(u =>
+        String(u.id) === cand ||
+        (u.displayId && u.displayId.toUpperCase() === cand.toUpperCase())
+      );
+      if (found) {
+        if (!name && found.name && !isMongoHexId(found.name)) {
+          name = found.name.trim();
+        }
+        if (!displayId && found.displayId) {
+          displayId = found.displayId.trim();
+        }
+      }
+    }
+  }
+
+  // 5. If name is still missing, but displayId is like "STAFF-1", try searching users by displayId
+  if (!name && displayId && users && users.length > 0) {
+    const foundByDisplay = users.find(u => u.displayId && u.displayId.toUpperCase() === displayId.toUpperCase());
+    if (foundByDisplay && foundByDisplay.name && !isMongoHexId(foundByDisplay.name)) {
+      name = foundByDisplay.name.trim();
+    }
+  }
+
+  // 6. Fallback if name is raw assigned string (non-hex, not STAFF-)
+  const rawAssigned = String(plot.assignedTo || '').trim();
+  if (!name && rawAssigned && !isMongoHexId(rawAssigned) && !rawAssigned.toUpperCase().startsWith('STAFF-')) {
+    name = rawAssigned;
+  }
+
+  // Safety: never return raw hex as displayId or name
+  if (isMongoHexId(name)) name = '';
+  if (isMongoHexId(displayId)) displayId = '';
+
+  return { name, displayId: displayId || undefined };
+};
+
 /* ─── component ─── */
 export default function AdminRegistrations() {
   const navigate = useNavigate();
@@ -148,7 +299,13 @@ export default function AdminRegistrations() {
   const { role, userId } = useAuth();
 
   /* ── tabs & filter state ── */
-  const [activeTab, setActiveTab] = useState<TabType>('registered');
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search).get('tab');
+      if (p === 'upcoming' || p === 'registered') return p as TabType;
+    }
+    return 'registered';
+  });
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
 
   // Edit payment status modal state for registered tab
@@ -176,7 +333,7 @@ export default function AdminRegistrations() {
     }
   }, [location.search]);
 
-  const debouncedSearch = useDebounce(filters.search);
+  const debouncedSearch = useDebounce(filters.search, 500);
 
   const committedFilters = useMemo<Filters>(
     () => ({ ...filters, search: debouncedSearch }),
@@ -194,7 +351,7 @@ export default function AdminRegistrations() {
   const [refreshing, setRefreshing] = useState(false);
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [allLeads, setAllLeads] = useState<any[]>([]);
-  const [allUsers, setAllUsers] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string; displayId?: string; role: string }[]>([]);
   const [whatsAppCustomer, setWhatsAppCustomer] = useState<{ phone: string; name: string } | null>(null);
 
   /* ── confirm registration modal states ── */
@@ -239,8 +396,8 @@ export default function AdminRegistrations() {
       userService.getAll({ role: 'admin', limit: 100 }).catch(() => ({ data: [] })),
       userService.getAll({ role: 'staff', limit: 200 }).catch(() => ({ data: [] })),
     ]).then(([adminRes, staffRes]) => {
-      const admins = (adminRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'admin' }));
-      const staff = (staffRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'staff' }));
+      const admins = (adminRes.data || []).map((u: any) => ({ id: String(u.id || u._id), name: u.name || '', displayId: u.displayId || '', role: 'admin' }));
+      const staff = (staffRes.data || []).map((u: any) => ({ id: String(u.id || u._id), name: u.name || '', displayId: u.displayId || '', role: 'staff' }));
       setAllUsers([...admins, ...staff]);
     });
   }, []);
@@ -254,17 +411,49 @@ export default function AdminRegistrations() {
       const found = allLeads.find(l => String(l.id || l._id) === String(bLeadId));
       if (found) return found;
     }
-    const phone10 = custPhone ? custPhone.replace(/\D/g, '').slice(-10) : '';
+    const phone10 = custPhone ? normPhone10(custPhone) : '';
     if (phone10) {
-      const found = allLeads.find(l => l.phone && l.phone.replace(/\D/g, '').slice(-10) === phone10);
-      if (found) return found;
+      const matches = allLeads.filter(
+        (l) => l.phone && normPhone10(l.phone) === phone10,
+      );
+      if (matches.length) {
+        return matches.find((l) => l.displayId) || matches[0];
+      }
     }
     if (custName) {
       const found = allLeads.find(l => l.customerName && l.customerName.toLowerCase().trim() === custName.toLowerCase().trim());
       if (found) return found;
     }
+
+    if ((plot as any).leadInfo) {
+      const info = (plot as any).leadInfo;
+      const fromList = bLeadId ? allLeads.find(l => String(l.id || l._id) === String(bLeadId)) : null;
+      return fromList
+        ? { ...info, ...fromList, displayId: fromList.displayId || info.displayId }
+        : info;
+    }
     return null;
   }, [allLeads]);
+
+  /** Same customer on multiple plots: share one L- ID when any row/plot has it */
+  const customerDisplayIdByPhone = useMemo(() => {
+    const map = new Map<string, string>();
+    const add = (phone?: string, displayId?: string) => {
+      if (!displayId) return;
+      const key = normPhone10(phone);
+      if (key) map.set(key, displayId);
+    };
+
+    allLeads.forEach((l) => add(l.phone, l.displayId));
+    const ingestPlot = (p: Plot) => {
+      const info = (p as { leadInfo?: { phone?: string; displayId?: string } }).leadInfo;
+      add(p.bookedBy?.phone, info?.displayId);
+      add(info?.phone, info?.displayId);
+    };
+    plots.forEach(ingestPlot);
+    allPlots.forEach(ingestPlot);
+    return map;
+  }, [allLeads, plots, allPlots]);
 
   /* ── stable fetch ── */
   const fetchPlots = useCallback(async (p = 1, { replace = true, showRefreshing = false } = {}) => {
@@ -290,6 +479,7 @@ export default function AdminRegistrations() {
         params['bookedBy.bank'] = f.bankFilter;
       }
       if (f.search) params.search = f.search;
+      params.groupBy = 'customer';
 
 
       if (f.sortBy) {
@@ -304,6 +494,10 @@ export default function AdminRegistrations() {
         if (f.dateTo) params[`${dateField}[lte]`] = f.dateTo;
       }
 
+      if (f.paymentStatusFilter !== 'All') {
+        params.paymentStatusFilter = f.paymentStatusFilter;
+      }
+
       let res: any;
       if (isStaff) {
         params.assignedTo = userIdRef.current;
@@ -312,7 +506,11 @@ export default function AdminRegistrations() {
         res = await plotService.getAll(params);
       }
 
-      const data = (res?.data || []) as Plot[];
+      // Discard stale response if active tab changed while request was in-flight
+      if (activeTabRef.current !== tab) return;
+
+      const rawData = (res?.data || []) as Plot[];
+      const data = rawData.filter(item => tab === 'registered' ? item.status === 'Registered' : item.status === 'Booked');
       setPlots(prev => {
         const combined = replace ? data : [...prev, ...data];
         const seenIds = new Set<string>();
@@ -349,17 +547,27 @@ export default function AdminRegistrations() {
   }, [activeTab, committedFilters, fetchPlots]);
 
   /* ── multi-booking helpers ── */
-  const getCustomerBookedPlots = useCallback((customerName?: string, phone?: string) => {
-    if (!customerName && !phone) return [];
+  const getCustomerBookedPlots = useCallback((customerName?: string, phone?: string, leadId?: string) => {
     const nameLower = customerName?.toLowerCase().trim() || '';
-    const phoneClean = phone?.replace(/\D/g, '') || '';
+    const phone10 = normPhone10(phone);
+    const lid = asEntityId(leadId);
+    if (!nameLower && !phone10 && !lid) return [];
 
-    return allPlots.filter(p => {
-      const pName = p.bookedBy?.name?.toLowerCase().trim();
-      const pPhone = p.bookedBy?.phone?.replace(/\D/g, '');
-      return (nameLower && pName && pName === nameLower) || (phoneClean && pPhone && pPhone === phoneClean);
+    const pool = uniquePlotsById([...plots, ...allPlots]);
+    return pool.filter(p => {
+      const pLead = asEntityId(p.bookedBy?.leadId);
+      const pPhone = normPhone10(p.bookedBy?.phone || (p as any).leadInfo?.phone);
+      const pName = (p.bookedBy?.name || (p as any).leadInfo?.customerName || '').toLowerCase().trim();
+      const pDisplay = ((p as any).leadInfo?.displayId || '').toUpperCase().trim();
+      
+      const match = (lid && pLead && pLead === lid)
+        || (phone10 && pPhone && pPhone === phone10)
+        || (nameLower && pName && pName === nameLower);
+        // Note: we don't have displayId from the arguments here, but we check name correctly now.
+        
+      return Boolean(match);
     });
-  }, [allPlots]);
+  }, [allPlots, plots]);
 
   const getCustomerProjects = useCallback((customerName?: string, phone?: string) => {
     const custPlots = getCustomerBookedPlots(customerName, phone);
@@ -378,6 +586,37 @@ export default function AdminRegistrations() {
     return Array.from(projMap.values());
   }, [getCustomerBookedPlots, allProjects]);
 
+  const getCustomerTabBookings = useCallback(
+    (customerName?: string, phone?: string) => {
+      const plots = getCustomerBookedPlots(customerName, phone);
+      if (activeTab === 'registered') return plots.filter((p) => p.status === 'Registered');
+      if (activeTab === 'upcoming') return plots.filter((p) => p.status === 'Booked');
+      return plots;
+    },
+    [getCustomerBookedPlots, activeTab]
+  );
+
+  const goToRegistrationDetail = useCallback(
+    (plot: Plot, matchedLead: LeadLike) => {
+      const plotId = asEntityId(plot.id || (plot as { _id?: string })._id);
+      const leadId =
+        asEntityId(matchedLead?.id) ||
+        asEntityId(matchedLead?._id) ||
+        asEntityId(plot.bookedBy?.leadId) ||
+        asEntityId((plot as { leadInfo?: { _id?: string; id?: string } }).leadInfo?._id) ||
+        asEntityId((plot as { leadInfo?: { _id?: string; id?: string } }).leadInfo?.id) ||
+        plotId;
+      const phone =
+        String(plot.bookedBy?.phone || (plot as { leadInfo?: { phone?: string } }).leadInfo?.phone || matchedLead?.phone || '')
+          .replace(/\D/g, '')
+          .slice(-10);
+      const qs = new URLSearchParams({ tab: activeTab, plotId });
+      if (phone.length === 10) qs.set('phone', phone);
+      navigate(`/${role}/registrations/${leadId}?${qs.toString()}`);
+    },
+    [navigate, role, activeTab]
+  );
+
   /* ── client filter & sort ── */
   /* ── filtered list returned directly from DB ── */
   const filtered = useMemo(() => {
@@ -390,41 +629,18 @@ export default function AdminRegistrations() {
       return true;
     });
 
-    // Apply search filter: Customer Name, Mobile Number, Project Name
-    if (filters.search.trim()) {
-      const q = filters.search.toLowerCase().trim();
-      const qPhoneClean = q.replace(/\D/g, '');
+    // Strictly enforce active tab status: Registered plots NEVER show in Upcoming, and Booked plots NEVER show in Registered
+    result = result.filter(p => {
+      if (activeTab === 'registered') return p.status === 'Registered';
+      if (activeTab === 'upcoming') return p.status === 'Booked';
+      return true;
+    });
 
-      result = result.filter(plot => {
-        const matchedLead = getLeadForPlot(plot);
-        const custName = (plot.bookedBy?.name || matchedLead?.customerName || '').toLowerCase().trim();
-        const custPhone = (plot.bookedBy?.phone || matchedLead?.phone || '').trim();
-        const custPhoneClean = custPhone.replace(/\D/g, '');
+    // Text search runs on the server (name, phone, project, customer ID L-912 / 912).
+    // Client re-filter was dropping rows (e.g. multi-plot customers missing displayId on one row).
 
-        const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id || (plot.projectId as any).id : plot.projectId;
-        const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
-        const projName = (projObj?.name || (plot as any).projectName || '').toLowerCase().trim();
+    // Payment status is filtered server-side via paymentStatusFilter param
 
-        const matchesName = custName.includes(q);
-        const matchesPhone = qPhoneClean ? custPhoneClean.includes(qPhoneClean) : custPhone.toLowerCase().includes(q);
-        const matchesProject = projName.includes(q);
-
-        return matchesName || matchesPhone || matchesProject;
-      });
-    }
-
-    // Apply Payment Status filter
-    if (filters.paymentStatusFilter !== 'All') {
-      result = result.filter(plot => {
-        const pStatus = plot.bookedBy?.paymentStatus || (plot as any).paymentStatus || 'Not Paid';
-        if (filters.paymentStatusFilter === 'Pending Payment' || filters.paymentStatusFilter === 'Not Fully Paid') {
-          return pStatus !== 'Fully Paid';
-        }
-        return pStatus === filters.paymentStatusFilter;
-      });
-    }
-
-    // Apply date range filter (registrationDate for registered tab, expectedRegistrationDate for upcoming tab)
     if (filters.dateFrom || filters.dateTo) {
       result = result.filter(p => {
         const rawDate = activeTab === 'registered' ? p.registrationDate : p.expectedRegistrationDate;
@@ -444,7 +660,8 @@ export default function AdminRegistrations() {
 
       result = result.filter(plot => {
         const matchedLead = getLeadForPlot(plot);
-        const assignedToText = (plot.assignedTo || (plot as any).assignedToName || matchedLead?.assignedToDisplayId || matchedLead?.assignedToName || '').toString().toLowerCase().trim();
+        const assignedStaffObj = resolveAssignedStaff(plot, matchedLead, allUsers);
+        const assignedToText = (assignedStaffObj.name ? `${assignedStaffObj.name} ${assignedStaffObj.displayId || ''}` : (assignedStaffObj.displayId || '')).toLowerCase().trim();
 
         const pAssignedTo = plot.assignedTo ? String(plot.assignedTo).toLowerCase().trim() : '';
         const pAssignedToName = (plot as any).assignedToName ? String((plot as any).assignedToName).toLowerCase().trim() : '';
@@ -490,33 +707,31 @@ export default function AdminRegistrations() {
       return diffFuture;
     };
 
-    // Deduplicate by customer: keep the most relevant plot per customer
-    const seen = new Map<string, Plot>();
-    result.forEach(p => {
-      const nameKey = p.bookedBy?.name?.toLowerCase().trim() || '';
-      const phoneKey = p.bookedBy?.phone?.replace(/\D/g, '').slice(-10) || '';
-      const customerKey = phoneKey || nameKey;
-      if (!customerKey) return;
-
-      const existing = seen.get(customerKey);
-      if (!existing) {
-        seen.set(customerKey, p);
-      } else if (activeTab === 'upcoming') {
-        // Keep the plot with the earliest expected reg date
-        if (urgencyScore(p) < urgencyScore(existing)) {
-          seen.set(customerKey, p);
+    // One customer row: extra plots AND extra projects show as +N, not extra table rows.
+    result = unionMergeByKeys(
+      result,
+      (p) => {
+        const lead = getLeadForPlot(p);
+        const info = (p as { leadInfo?: { phone?: string; displayId?: string; customerName?: string } }).leadInfo;
+        return customerIdentityKeys({
+          name: p.bookedBy?.name || lead?.customerName || info?.customerName,
+          phone: p.bookedBy?.phone || lead?.phone || info?.phone,
+          displayId: lead?.displayId || info?.displayId || customerDisplayIdByPhone.get(normPhone10(p.bookedBy?.phone || lead?.phone || info?.phone)),
+          leadId: asEntityId(p.bookedBy?.leadId || lead?.id || lead?._id || (info as any)?._id),
+        });
+      },
+      (existing, next) => mergePlotCustomerRows(existing, next, (a, b) => {
+        if (activeTab === 'registered') {
+          const existingDate = a.registrationDate ? new Date(a.registrationDate).getTime() : 0;
+          const newDate = b.registrationDate ? new Date(b.registrationDate).getTime() : 0;
+          return newDate > existingDate ? b : a;
         }
-      } else {
-        // Registered tab: keep the most recently registered
-        const existingDate = existing.registrationDate ? new Date(existing.registrationDate).getTime() : 0;
-        const newDate = p.registrationDate ? new Date(p.registrationDate).getTime() : 0;
-        if (newDate > existingDate) {
-          seen.set(customerKey, p);
-        }
-      }
-    });
-
-    result = Array.from(seen.values());
+        const aCount = (a as Plot & { relatedBookingCount?: number }).relatedBookingCount || 1;
+        const bCount = (b as Plot & { relatedBookingCount?: number }).relatedBookingCount || 1;
+        if (bCount > aCount) return b;
+        return urgencyScore(b) < urgencyScore(a) ? b : a;
+      })
+    );
 
     // Apply sorting selection dynamically based on user choice
     const sortBy = filters.sortBy;
@@ -560,8 +775,35 @@ export default function AdminRegistrations() {
       }
     }
 
-    return result;
-  }, [plots, activeTab, filters.sortBy, filters.search, allProjects, getLeadForPlot]);
+    const collapsed = new Map<string, typeof result[0]>();
+    result.forEach((p) => {
+      const lead = getLeadForPlot(p);
+      const info = (p as { leadInfo?: { phone?: string } }).leadInfo;
+      const phone = normPhone10(p.bookedBy?.phone || lead?.phone || info?.phone);
+      const displayId = (resolveCustomerDisplayId(p, lead, customerDisplayIdByPhone) || '').toUpperCase();
+      const key = phone ? `p:${phone}` : displayId ? `d:${displayId}` : plotRecordId(p);
+      const existing = collapsed.get(key);
+      if (!existing) {
+        collapsed.set(key, p);
+        return;
+      }
+      collapsed.set(key, mergePlotCustomerRows(existing, p, (a, b) => a));
+    });
+    const byDisplay = new Map<string, typeof result[0]>();
+    Array.from(collapsed.values()).forEach((p) => {
+      const lead = getLeadForPlot(p);
+      const displayId = (resolveCustomerDisplayId(p, lead, customerDisplayIdByPhone) || '').toUpperCase();
+      const phone = normPhone10(p.bookedBy?.phone || lead?.phone || (p as { leadInfo?: { phone?: string } }).leadInfo?.phone);
+      const key = displayId ? `d:${displayId}` : phone ? `p:${phone}` : plotRecordId(p);
+      const existing = byDisplay.get(key);
+      if (!existing) {
+        byDisplay.set(key, p);
+        return;
+      }
+      byDisplay.set(key, mergePlotCustomerRows(existing, p, (a, b) => a));
+    });
+    return Array.from(byDisplay.values());
+  }, [plots, activeTab, filters.sortBy, debouncedSearch, allProjects, getLeadForPlot, customerDisplayIdByPhone]);
 
   /* ── per-row selected booking plot map ── */
   const [selectedPlotMap, setSelectedPlotMap] = useState<Record<string, string>>({});
@@ -571,12 +813,17 @@ export default function AdminRegistrations() {
   const [editingPlot, setEditingPlot] = useState<Plot | null>(null);
   const [editCustomerPlots, setEditCustomerPlots] = useState<Plot[]>([]);
   const [editSelectedPlotId, setEditSelectedPlotId] = useState<string>('lead_default');
+  const [editPlotsLoading, setEditPlotsLoading] = useState(false);
+  const editPlotsLoadSeq = useRef(0);
   const [editPaymentStatus, setEditPaymentStatus] = useState('Not Paid');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
+  const [editInitialPaymentMethod, setEditInitialPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
   const [editBank, setEditBank] = useState('');
   const [editBankFollowerName, setEditBankFollowerName] = useState('');
   const [editBankFollowerPhone, setEditBankFollowerPhone] = useState('');
   const [editLoanStage, setEditLoanStage] = useState('Not Applied');
   const [editDate, setEditDate] = useState('');
+  const [editRegistrationDate, setEditRegistrationDate] = useState('');
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -775,7 +1022,7 @@ export default function AdminRegistrations() {
 
       await Promise.allSettled(tasksToCreate.map(t => taskService.create(t as any)));
 
-      toast.success('Registration confirmed! 4 post-registration tasks created.');
+      toast.success('This plot is registered. Other bookings for this customer stay in Upcoming.');
       setConfirmingRegPlot(null);
       void fetchPlots(page, { replace: true, showRefreshing: true });
     } catch (err: any) {
@@ -788,13 +1035,14 @@ export default function AdminRegistrations() {
   const handleEditClick = (e: React.MouseEvent, plot: Plot) => {
     e.stopPropagation();
     setEditingPlot(plot);
-    const custPlots = getCustomerBookedPlots(plot.bookedBy?.name, plot.bookedBy?.phone);
-    setEditCustomerPlots(custPlots);
 
-    const pid = plot.id || (plot as any)._id;
+    const pid = plotRecordId(plot);
     setEditSelectedPlotId(pid);
 
     setEditPaymentStatus(plot.bookedBy?.paymentStatus || 'Not Paid');
+    const method = plot.bookedBy?.paymentMethod === 'LOAN' ? 'LOAN' : 'CASH';
+    setEditPaymentMethod(method);
+    setEditInitialPaymentMethod(method);
     setEditBank(plot.bookedBy?.bank ?? '');
     setEditBankFollowerName(plot.bookedBy?.bankFollowerName ?? '');
     setEditBankFollowerPhone(plot.bookedBy?.bankFollowerPhone ?? '');
@@ -803,15 +1051,40 @@ export default function AdminRegistrations() {
 
     const targetDate = activeTab === 'registered' ? plot.registrationDate : plot.expectedRegistrationDate;
     setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
+    setEditRegistrationDate(plot.registrationDate ? String(plot.registrationDate).split('T')[0] : '');
 
+    const localSiblings = getCustomerBookedPlots(
+      plot.bookedBy?.name,
+      plot.bookedBy?.phone,
+      asEntityId(plot.bookedBy?.leadId)
+    );
+    setEditCustomerPlots(plotsForEditModal(localSiblings, plot, activeTab));
     setEditModalOpen(true);
+
+    const seq = ++editPlotsLoadSeq.current;
+    setEditPlotsLoading(true);
+    plotService.getCustomerBookings({
+      plotId: pid || undefined,
+      phone: plot.bookedBy?.phone || (plot as { leadInfo?: { phone?: string } }).leadInfo?.phone || undefined,
+      leadId: asEntityId(plot.bookedBy?.leadId) || undefined,
+    }).then((res) => {
+      if (seq !== editPlotsLoadSeq.current) return;
+      setEditCustomerPlots(plotsForEditModal(res.data || [], plot, activeTab));
+    }).catch(() => {
+      // Keep local siblings when the customer-bookings lookup fails.
+    }).finally(() => {
+      if (seq === editPlotsLoadSeq.current) setEditPlotsLoading(false);
+    });
   };
 
   const handleSwitchEditBooking = (plotId: string) => {
     setEditSelectedPlotId(plotId);
-    const target = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(plotId));
+    const target = editCustomerPlots.find(p => plotRecordId(p) === String(plotId));
     if (target) {
       setEditPaymentStatus(target.bookedBy?.paymentStatus || 'Not Paid');
+      const method = target.bookedBy?.paymentMethod === 'LOAN' ? 'LOAN' : 'CASH';
+      setEditPaymentMethod(method);
+      setEditInitialPaymentMethod(method);
       setEditBank(target.bookedBy?.bank ?? '');
       setEditBankFollowerName(target.bookedBy?.bankFollowerName ?? '');
       setEditBankFollowerPhone(target.bookedBy?.bankFollowerPhone ?? '');
@@ -820,20 +1093,27 @@ export default function AdminRegistrations() {
 
       const targetDate = activeTab === 'registered' ? target.registrationDate : target.expectedRegistrationDate;
       setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
+      setEditRegistrationDate(target.registrationDate ? String(target.registrationDate).split('T')[0] : '');
     }
   };
 
   const handleSaveEdit = async () => {
     if (!editingPlot) return;
 
-    if (activeTab === 'registered') {
-      const bName = editBank.trim();
-      const bFollower = editBankFollowerName.trim();
-      const bPhone = editBankFollowerPhone.trim();
+    const bName = editBank.trim();
+    const bFollower = editBankFollowerName.trim();
+    const bPhone = editBankFollowerPhone.trim();
 
-      const hasAnyBankField = !!bName || !!bFollower || !!bPhone;
-      const hasAllBankFields = !!bName && !!bFollower && !!bPhone;
+    const hasAnyBankField = !!bName || !!bFollower || !!bPhone;
+    const hasAllBankFields = !!bName && !!bFollower && !!bPhone;
+    const switchedToLoan = editPaymentMethod === 'LOAN' && editInitialPaymentMethod !== 'LOAN';
 
+    if (switchedToLoan && !hasAllBankFields) {
+      toast.error('Bank Name, Follower Name, and Follower Mobile are required when switching to Loan payment mode.');
+      return;
+    }
+
+    if (editPaymentMethod === 'LOAN') {
       if (hasAnyBankField && !hasAllBankFields) {
         toast.error('If filling Bank details, Bank Name, Follower Name, and Follower Mobile are all mandatory.');
         return;
@@ -850,39 +1130,59 @@ export default function AdminRegistrations() {
 
     setSaving(true);
     try {
-      const targetId = editSelectedPlotId !== 'lead_default' ? editSelectedPlotId : (editingPlot.id || (editingPlot as any)._id);
-      const targetPlot = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(targetId)) || editingPlot;
+      const targetId = editSelectedPlotId !== 'lead_default' ? editSelectedPlotId : plotRecordId(editingPlot);
+      const targetPlot = editCustomerPlots.find(p => plotRecordId(p) === String(targetId)) || editingPlot;
+
+      const willRegister = activeTab === 'upcoming' && !!editRegistrationDate && targetPlot.status === 'Booked';
 
       await plotService.update(targetId, {
         ...targetPlot,
-        ...(activeTab === 'registered' ? { registrationDate: editDate } : { expectedRegistrationDate: editDate }),
+        ...(activeTab === 'registered'
+          ? { registrationDate: editDate }
+          : {
+              expectedRegistrationDate: editDate,
+              ...(editRegistrationDate ? { registrationDate: editRegistrationDate } : {}),
+            }),
         bookedBy: {
           ...targetPlot.bookedBy,
           paymentStatus: editPaymentStatus,
+          paymentMethod: editPaymentMethod,
           loanStage: editLoanStage,
-          ...(activeTab === 'registered' ? {
-            bank: editBank.trim(),
-            bankFollowerName: editBankFollowerName.trim(),
-            bankFollowerPhone: editBankFollowerPhone.trim(),
+          ...(editPaymentMethod === 'LOAN' ? {
+            bank: bName,
+            bankFollowerName: bFollower,
+            bankFollowerPhone: bPhone,
           } : {}),
         },
       } as any);
+
+      if (willRegister) {
+        await plotService.registerPlot(targetId, {
+          registrationDate: editRegistrationDate,
+          paymentStatus: editPaymentStatus,
+        }).catch(() => {});
+      }
 
       const matchedLead = getLeadForPlot(editingPlot);
       if (matchedLead) {
         const leadId = matchedLead.id || (matchedLead as any)._id;
         await leadService.update(leadId, {
           paymentStatus: editPaymentStatus,
+          paymentMethod: editPaymentMethod,
           loanStage: editLoanStage,
-          ...(activeTab === 'registered' ? {
-            bank: editBank.trim(),
-            bankFollowerName: editBankFollowerName.trim(),
-            bankFollowerPhone: editBankFollowerPhone.trim(),
+          ...(editPaymentMethod === 'LOAN' ? {
+            bank: bName,
+            bankFollowerName: bFollower,
+            bankFollowerPhone: bPhone,
           } : {}),
         } as any).catch(() => {});
       }
 
-      toast.success('Updated successfully');
+      toast.success(
+        willRegister
+          ? 'This plot moved to Registered. Any other bookings for this customer stay in Upcoming.'
+          : 'Updated successfully'
+      );
       setEditModalOpen(false);
       setEditingPlot(null);
 
@@ -950,7 +1250,14 @@ export default function AdminRegistrations() {
           {TABS.map(tab => (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => {
+                if (tab.key === activeTab) return;
+                setActiveTab(tab.key);
+                setPlots([]);
+                setTotal(0);
+                setTotalPages(1);
+                setPage(1);
+              }}
               className={`px-5 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === tab.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
             >
               {tab.label}
@@ -972,17 +1279,17 @@ export default function AdminRegistrations() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by customer name, mobile, or project..."
+              placeholder="Search by customer name, Customer ID (L-...), Staff ID (STAFF-...), mobile, or project..."
               value={filters.search}
               onChange={e => updateFilter('search', e.target.value)}
               className="w-full h-10 pl-9 pr-8 border border-slate-200 rounded-lg text-sm focus:border-brand-green focus:ring-2 focus:ring-emerald-100 outline-none transition-all bg-white"
             />
-            {refreshing && (
+            {(refreshing || (filters.search !== debouncedSearch && filters.search.trim())) && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
                 <div className="w-4 h-4 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
               </div>
             )}
-            {!refreshing && filters.search && (
+            {!refreshing && filters.search === debouncedSearch && filters.search && (
               <button onClick={() => updateFilter('search', '')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
                 <X size={14} />
               </button>
@@ -1188,59 +1495,36 @@ export default function AdminRegistrations() {
                     const pid = plot.id || (plot as any)._id;
                     const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || 'Customer';
                     const custPhone = plot.bookedBy?.phone || (plot as any).leadInfo?.phone || '';
-                    const leadId = plot.bookedBy?.leadId || plot.bookedBy?.id || (plot as any).leadId || (plot as any).leadInfo?._id || pid;
 
-                    const custProjects = getCustomerProjects(custName, custPhone);
-                    const primaryProj = custProjects[0]?.project;
-
+                    const matchedLead = getLeadForPlot(plot);
+                    const { extraCount, extraLabels } = relatedExtraFromPlot(plot as Plot & { relatedBookingCount?: number; relatedBookings?: { plotNumber?: string | number; projectName?: string; projectDisplayId?: string }[] });
                     const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id : plot.projectId;
                     const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
                     const projName = projObj ? projObj.name : '—';
                     const projDisplayId = projObj ? (projObj.displayId || '') : '';
                     const plotNum = plot.plotNumber || '—';
-
-                    const custBookedPlots = getCustomerBookedPlots(custName, custPhone);
-
-                    let extraCount = 0;
-                    let extraNames = '';
-                    if (activeTab === 'upcoming') {
-                      const otherBookedWithDate = custBookedPlots.filter(bp => {
-                        const bpId = bp.id || (bp as any)._id;
-                        return String(bpId) !== String(pid) && bp.expectedRegistrationDate;
-                      });
-                      extraCount = otherBookedWithDate.length;
-                      extraNames = otherBookedWithDate.map(bp => {
-                        const bpProjId = typeof bp.projectId === 'object' ? (bp.projectId as any)._id : bp.projectId;
-                        const bpProj = allProjects.find(pr => String(pr.id || pr._id) === String(bpProjId));
-                        return `${bpProj ? bpProj.name : 'Project'} — Plot #${bp.plotNumber}`;
-                      }).join(', ');
-                    } else {
-                      const otherProjects = custProjects.slice(1);
-                      extraCount = otherProjects.length;
-                      extraNames = otherProjects.map(p => `${p.project.name} [${p.project.displayId || ''}]`).join(', ');
-                    }
-
+                    const openDetail = () => goToRegistrationDetail(plot, matchedLead);
                     const expDate = plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : '';
                     const regDate = plot.registrationDate ? String(plot.registrationDate).split('T')[0] : '';
                     const todayStr = getTodayStr();
                     const isUpcomingPast = activeTab === 'upcoming' && !!expDate && expDate < todayStr;
-
-                    const matchedLead = getLeadForPlot(plot);
                     const locationCity = matchedLead?.city || (plot as any).city || '—';
                     const leadSourceType = matchedLead?.sourceType || (plot as any).sourceType;
                     const leadSource = matchedLead?.source || (plot as any).source;
                     const formattedSource = formatSource(leadSourceType, leadSource);
-                    const assignedToText = plot.assignedTo || (plot as any).assignedToName || matchedLead?.assignedToDisplayId || matchedLead?.assignedToName || '—';
+                    const assignedStaff = resolveAssignedStaff(plot, matchedLead, allUsers);
                     const daysPassedFromBooking = getDaysPassedFromBooking(plot, matchedLead);
 
                     return (
                       <tr key={pid} className={`transition-colors cursor-pointer group ${isUpcomingPast ? 'bg-rose-50/40 hover:bg-rose-50/80 border-l-4 border-l-rose-500' : 'hover:bg-slate-50/70'}`}>
                         {/* 1. Customer & Contact */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           <div className="flex items-center gap-2.5">
                             <Avatar initials={getInitials(custName)} size="sm" bg={getAvatarColor(custName)} />
                             <div className="flex flex-col">
-                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm"><NameTag name={custName} displayId={(plot as any).displayId || matchedLead?.displayId} /></span>
+                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm">
+                                <NameTag name={custName} displayId={resolveCustomerDisplayId(plot, matchedLead, customerDisplayIdByPhone)} />
+                              </span>
                               <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium mt-0.5">
                                 <Phone size={11} className="text-slate-400" />
                                 <span>{custPhone || '—'}</span>
@@ -1260,8 +1544,8 @@ export default function AdminRegistrations() {
                         </td>
 
                         {/* 2. Property & Plot */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
-                          <div className="flex flex-col gap-0.5 max-w-[210px]" title={`${projName} [${projDisplayId}]${extraNames ? ` (More: ${extraNames})` : ''}`}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
+                          <div className="flex flex-col gap-0.5 max-w-[210px]" title={`${projName} [${projDisplayId}]${extraLabels ? ` (More: ${extraLabels})` : ''}`}>
                             <div className="flex items-center gap-1 text-slate-900 font-semibold text-xs truncate">
                               <Building2 size={12} className="text-slate-400 shrink-0" />
                               <span className="truncate"><NameTag name={projName} displayId={projDisplayId} /></span>
@@ -1272,8 +1556,8 @@ export default function AdminRegistrations() {
                                 Plot {plotNum}
                               </span>
                               {extraCount > 0 && (
-                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also in: ${extraNames}`}>
-                                  +{extraCount} more
+                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also booked: ${extraLabels}`}>
+                                  +{extraCount}
                                 </span>
                               )}
                             </div>
@@ -1281,7 +1565,7 @@ export default function AdminRegistrations() {
                         </td>
 
                         {/* 3. Location & Source */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           <div className="flex flex-col gap-0.5 max-w-[150px]">
                             <div className="flex items-center gap-1 text-xs font-bold text-slate-800 truncate">
                               <MapPin size={11} className="text-amber-500 shrink-0" />
@@ -1292,19 +1576,30 @@ export default function AdminRegistrations() {
                         </td>
 
                         {/* 4. Assigned To */}
-                        <td className="px-4 py-3.5 whitespace-nowrap text-xs font-semibold text-slate-700" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
-                          {assignedToText}
+                        <td className="px-4 py-3.5 whitespace-nowrap text-xs text-slate-700" onClick={openDetail}>
+                          {assignedStaff.name ? (
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-900 text-xs">{assignedStaff.name}</span>
+                              {assignedStaff.displayId && (
+                                <span className="text-[10px] text-slate-400 font-medium">{assignedStaff.displayId}</span>
+                              )}
+                            </div>
+                          ) : assignedStaff.displayId ? (
+                            <span className="font-semibold text-slate-700">{assignedStaff.displayId}</span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
                         </td>
 
                         {/* 5. Payment Method */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
                             {plot.bookedBy?.paymentMethod || 'CASH'}
                           </span>
                         </td>
 
                         {/* 6. Bank & Follower */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           {(plot.bookedBy?.paymentMethod || 'CASH') === 'LOAN' ? (
                             <div className="flex flex-col gap-0.5 max-w-[180px]">
                               <span className="text-xs font-bold text-slate-900 truncate">{plot.bookedBy?.bank || 'No Bank'}</span>
@@ -1322,7 +1617,7 @@ export default function AdminRegistrations() {
                         </td>
 
                         {/* 6. Expected / Registration Date */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           {activeTab === 'registered' ? (
                             regDate ? (
                               <span className="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -1361,7 +1656,7 @@ export default function AdminRegistrations() {
                         </td>
 
                         {/* 7. Payment Status */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
                           <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
                         </td>
 
@@ -1415,9 +1710,10 @@ export default function AdminRegistrations() {
               const pid = plot.id || (plot as any)._id;
               const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || 'Customer';
               const custPhone = plot.bookedBy?.phone || (plot as any).leadInfo?.phone || '';
-              const leadId = plot.bookedBy?.leadId || plot.bookedBy?.id || (plot as any).leadId || (plot as any).leadInfo?._id || pid;
-              const custProjects = getCustomerProjects(custName, custPhone);
-              const primaryProj = custProjects[0]?.project;
+
+              const matchedLeadM = getLeadForPlot(plot);
+              const { extraCount } = relatedExtraFromPlot(plot as Plot & { relatedBookingCount?: number });
+              const openDetailM = () => goToRegistrationDetail(plot, matchedLeadM);
 
               const pProjId = typeof plot.projectId === 'object' ? (plot.projectId as any)._id : plot.projectId;
               const projObj = (typeof plot.projectId === 'object' && (plot.projectId as any)?.name) ? plot.projectId : allProjects.find(pr => String(pr.id || pr._id) === String(pProjId));
@@ -1425,36 +1721,24 @@ export default function AdminRegistrations() {
               const projDisplayId = projObj ? (projObj.displayId || '') : '';
               const plotNum = plot.plotNumber || '—';
 
-              let extraCount = 0;
-              if (activeTab === 'upcoming') {
-                const custBookedPlotsM = getCustomerBookedPlots(custName, custPhone);
-                extraCount = custBookedPlotsM.filter(bp => {
-                  const bpId = bp.id || (bp as any)._id;
-                  return String(bpId) !== String(pid) && bp.expectedRegistrationDate;
-                }).length;
-              } else {
-                extraCount = custProjects.length > 1 ? custProjects.length - 1 : 0;
-              }
-
               const expDate = plot.expectedRegistrationDate ? String(plot.expectedRegistrationDate).split('T')[0] : '';
               const regDate = plot.registrationDate ? String(plot.registrationDate).split('T')[0] : '';
               const todayStr = getTodayStr();
               const isUpcomingPastM = activeTab === 'upcoming' && !!expDate && expDate < todayStr;
 
-              const matchedLeadM = getLeadForPlot(plot);
               const locationCityM = matchedLeadM?.city || (plot as any).city || '—';
               const leadSourceTypeM = matchedLeadM?.sourceType || (plot as any).sourceType;
               const leadSourceM = matchedLeadM?.source || (plot as any).source;
               const formattedSourceM = formatSource(leadSourceTypeM, leadSourceM);
-              const assignedToTextM = plot.assignedTo || (plot as any).assignedToName || matchedLeadM?.assignedToDisplayId || matchedLeadM?.assignedToName || '—';
+              const assignedStaffM = resolveAssignedStaff(plot, matchedLeadM, allUsers);
               const daysPassedFromBookingM = getDaysPassedFromBooking(plot, matchedLeadM);
 
               return (
-                <div key={pid} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer hover:border-blue-200 transition-all" onClick={() => navigate(`/${role}/registrations/${leadId}?tab=${activeTab}`)}>
+                <div key={pid} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer hover:border-blue-200 transition-all" onClick={openDetailM}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Avatar initials={getInitials(custName)} size="sm" bg={getAvatarColor(custName)} />
-                      <span className="text-sm font-bold text-slate-900"><NameTag name={custName} displayId={(plot as any).displayId || matchedLeadM?.displayId} /></span>
+                      <span className="text-sm font-bold text-slate-900"><NameTag name={custName} displayId={resolveCustomerDisplayId(plot, matchedLeadM, customerDisplayIdByPhone)} /></span>
                     </div>
                     <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
                   </div>
@@ -1466,7 +1750,19 @@ export default function AdminRegistrations() {
                       {extraCount > 0 && <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1 py-0.5 rounded">+{extraCount}</span>}
                     </div>
                     <div><span className="text-slate-400">Plot #:</span> <span className="font-semibold text-slate-800">{plotNum}</span></div>
-                    <div><span className="text-slate-400">Assigned:</span> <span className="font-semibold text-slate-800">{assignedToTextM}</span></div>
+                    <div>
+                      <span className="text-slate-400">Assigned:</span>{' '}
+                      <span className="font-bold text-slate-800">
+                        {assignedStaffM.name ? (
+                          <>
+                            <span>{assignedStaffM.name}</span>
+                            {assignedStaffM.displayId && (
+                              <span className="text-[10px] text-slate-400 font-medium ml-1">({assignedStaffM.displayId})</span>
+                            )}
+                          </>
+                        ) : assignedStaffM.displayId || '—'}
+                      </span>
+                    </div>
                     <div><span className="text-slate-400">City:</span> <span className="font-semibold text-slate-800">{locationCityM}</span></div>
                     <div><span className="text-slate-400">Source:</span> <span className="font-semibold text-slate-800">{formattedSourceM}</span></div>
                     {activeTab === 'registered' && (
@@ -1555,25 +1851,39 @@ export default function AdminRegistrations() {
       )}
 
       {/* Edit Modal */}
-      <Modal open={editModalOpen} onClose={() => { setEditModalOpen(false); setEditingPlot(null); }} title="Edit Registration">
+      <Modal open={editModalOpen} onClose={() => { setEditModalOpen(false); setEditingPlot(null); editPlotsLoadSeq.current += 1; }} title="Edit Registration">
         <div className="space-y-4">
-          {editCustomerPlots.length > 0 && (
+          {(editCustomerPlots.length > 1 || editPlotsLoading) && (
             <div className="bg-blue-50/60 p-3 rounded-lg border border-blue-100">
               <label className="block text-xs font-bold text-slate-800 mb-1">Select Booking / Plot to Edit</label>
               <select
                 value={editSelectedPlotId}
                 onChange={e => handleSwitchEditBooking(e.target.value)}
-                className="w-full h-9 px-3 border border-slate-200 rounded-md text-xs font-semibold bg-white text-slate-800 outline-none focus:border-brand-green"
+                disabled={editPlotsLoading && editCustomerPlots.length <= 1}
+                className="w-full h-9 px-3 border border-slate-200 rounded-md text-xs font-semibold bg-white text-slate-800 outline-none focus:border-brand-green disabled:opacity-60"
               >
                 {editCustomerPlots.map(p => {
-                  const pProj = allProjects.find(pr => String(pr.id || pr._id) === String(typeof p.projectId === 'object' ? (p.projectId as any)._id : p.projectId));
+                  const pProj = resolveProjectForPlot(p, allProjects);
+                  const projName = pProj?.name
+                    || (typeof p.projectId === 'object' && p.projectId ? (p.projectId as { name?: string }).name : '')
+                    || 'Project';
+                  const displayId = pProj?.displayId
+                    || (typeof p.projectId === 'object' && p.projectId ? (p.projectId as { displayId?: string }).displayId : undefined);
                   return (
-                    <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>
-                      {pProj ? pProj.name : 'Project'} - Plot #{p.plotNumber}
+                    <option key={plotRecordId(p)} value={plotRecordId(p)}>
+                      {formatBookingSelectLabel(projName, displayId, p.plotNumber)}
                     </option>
                   );
                 })}
               </select>
+              {editPlotsLoading && (
+                <p className="text-[11px] text-slate-400 mt-1">Loading this customer’s other plots…</p>
+              )}
+              {!editPlotsLoading && editCustomerPlots.length > 1 && (
+                <p className="text-[11px] text-slate-400 mt-1">
+                  This customer has {editCustomerPlots.length} plots. Choose the one to update.
+                </p>
+              )}
             </div>
           )}
 
@@ -1589,6 +1899,35 @@ export default function AdminRegistrations() {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Payment Mode</label>
+            <select
+              value={editPaymentMethod}
+              onChange={e => setEditPaymentMethod(e.target.value as 'CASH' | 'LOAN')}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+            >
+              <option value="CASH">Direct Cash</option>
+              <option value="LOAN">Loan</option>
+            </select>
+          </div>
+
+          {activeTab === 'upcoming' && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1">
+                Registration Date
+              </label>
+              <input
+                type="date"
+                value={editRegistrationDate}
+                onChange={e => setEditRegistrationDate(e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Only this selected plot is registered and moved to Registered. Other plots for this customer stay in Upcoming.
+              </p>
+            </div>
+          )}
+
+          <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1">
               {activeTab === 'registered' ? 'Registration Date' : 'Expected Registration Date'}
             </label>
@@ -1600,8 +1939,8 @@ export default function AdminRegistrations() {
             />
           </div>
 
-          {/* Bank & Follower Fields (Registered Tab & LOAN payment method Only) */}
-          {activeTab === 'registered' && (editingPlot?.bookedBy?.paymentMethod || 'CASH') === 'LOAN' && (
+          {/* Bank & Follower Fields (Loan payment mode only) */}
+          {editPaymentMethod === 'LOAN' && (
             <>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>

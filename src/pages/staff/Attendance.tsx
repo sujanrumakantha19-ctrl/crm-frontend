@@ -23,7 +23,15 @@ interface DisplayRecord {
 }
 
 export default function StaffAttendance() {
-  const { userId, user } = useAuth();
+  const {
+    userId,
+    user,
+    checkedIn: authCheckedIn,
+    checkInTime: authCheckInTime,
+    checkInTimestamp: authCheckInTs,
+    checkIn: authCheckIn,
+    checkOut: authCheckOut,
+  } = useAuth();
 
   // --- Dropdown state ---
   const [activityType, setActivityType] = useState('');
@@ -38,10 +46,10 @@ export default function StaffAttendance() {
   const projectRef = useRef<HTMLDivElement>(null);
 
   // --- Active session state ---
-  const [checkedIn, setCheckedIn] = useState(false);
+  const [checkedIn, setCheckedIn] = useState<boolean>(() => authCheckedIn || localStorage.getItem('crm_checkedin') === 'true');
   const [activeRecordId, setActiveRecordId] = useState<string | null>(null);
-  const [activeCheckInTime, setActiveCheckInTime] = useState<string | null>(null);
-  const [activeCheckInTs, setActiveCheckInTs] = useState<number | null>(null);
+  const [activeCheckInTime, setActiveCheckInTime] = useState<string | null>(() => authCheckInTime || localStorage.getItem('crm_checkintime'));
+  const [activeCheckInTs, setActiveCheckInTs] = useState<number | null>(() => authCheckInTs || (localStorage.getItem('crm_checkints') ? parseInt(localStorage.getItem('crm_checkints')!, 10) : null));
   const [activeActivityType, setActiveActivityType] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
@@ -122,18 +130,55 @@ export default function StaffAttendance() {
       // so the active session is detected even if it's not on the current page
       try {
         const todayRes = await attendanceService.getToday();
-        const todayRecord = (todayRes as any).data || todayRes;
-        if (todayRecord && todayRecord.date === todayDateStr && (!todayRecord.checkOut || todayRecord.checkOut === '—' || todayRecord.checkOut === '-')) {
+        const rawList = Array.isArray((todayRes as any)?.data)
+          ? (todayRes as any).data
+          : (todayRes as any)?.data
+            ? [(todayRes as any).data]
+            : Array.isArray(todayRes)
+              ? todayRes
+              : [];
+        const todayRecord = rawList.find(
+          (r: any) => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
+        ) || (rawList.length > 0 && (!rawList[0].checkOut || rawList[0].checkOut === '—' || rawList[0].checkOut === '-') ? rawList[0] : null);
+
+        if (todayRecord) {
           setCheckedIn(true);
           setActiveRecordId(todayRecord.id || todayRecord._id);
-          setActiveCheckInTime(todayRecord.checkIn === '—' || todayRecord.checkIn === '-' ? null : todayRecord.checkIn);
-          setActiveCheckInTs(todayRecord.createdAt ? new Date(todayRecord.createdAt).getTime() : Date.now());
+          const cInTime = (todayRecord.checkIn === '—' || todayRecord.checkIn === '-') ? null : todayRecord.checkIn;
+          const ts = todayRecord.createdAt ? new Date(todayRecord.createdAt).getTime() : Date.now();
+          setActiveCheckInTime(cInTime);
+          setActiveCheckInTs(ts);
           setActiveActivityType(todayRecord.activityType || 'On Duty');
           setActiveProjectId(todayRecord.projectId || '');
           setActiveProjectName(todayRecord.projectName || '');
           setActivityType(todayRecord.activityType || 'On Duty');
           setSelectedProjectId(todayRecord.projectId || '');
           setSelectedProjectName(todayRecord.projectName || '');
+          authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
+        } else {
+          // If no active session found on today endpoint, check within monthly records
+          const active = records.find(
+            r => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
+          );
+          if (active) {
+            setCheckedIn(true);
+            setActiveRecordId(active.id);
+            const cInTime = (active.checkIn === '—' || active.checkIn === '-') ? null : active.checkIn;
+            const ts = active.createdAt ? new Date(active.createdAt).getTime() : Date.now();
+            setActiveCheckInTime(cInTime);
+            setActiveCheckInTs(ts);
+            setActiveActivityType(active.activityType || 'On Duty');
+            setActiveProjectId(active.projectId || '');
+            setActiveProjectName(active.projectName || '');
+            setActivityType(active.activityType || 'On Duty');
+            setSelectedProjectId(active.projectId || '');
+            setSelectedProjectName(active.projectName || '');
+            authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
+          } else {
+            setCheckedIn(false);
+            setActiveRecordId(null);
+            authCheckOut();
+          }
         }
       } catch {
         // Fallback: check within current page records if /today endpoint fails
@@ -143,14 +188,21 @@ export default function StaffAttendance() {
         if (active) {
           setCheckedIn(true);
           setActiveRecordId(active.id);
-          setActiveCheckInTime(active.checkIn === '—' || active.checkIn === '-' ? null : active.checkIn);
-          setActiveCheckInTs(active.createdAt ? new Date(active.createdAt).getTime() : Date.now());
+          const cInTime = (active.checkIn === '—' || active.checkIn === '-') ? null : active.checkIn;
+          const ts = active.createdAt ? new Date(active.createdAt).getTime() : Date.now();
+          setActiveCheckInTime(cInTime);
+          setActiveCheckInTs(ts);
           setActiveActivityType(active.activityType || 'On Duty');
           setActiveProjectId(active.projectId || '');
           setActiveProjectName(active.projectName || '');
           setActivityType(active.activityType || 'On Duty');
           setSelectedProjectId(active.projectId || '');
           setSelectedProjectName(active.projectName || '');
+          authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
+        } else {
+          setCheckedIn(false);
+          setActiveRecordId(null);
+          authCheckOut();
         }
       }
     } catch {
@@ -158,7 +210,7 @@ export default function StaffAttendance() {
     } finally {
       setLoading(false);
     }
-  }, [userId, todayDateStr, currentPage, itemsPerPage, monthFilter, dateFilter]);
+  }, [userId, todayDateStr, currentPage, itemsPerPage, monthFilter, dateFilter, authCheckIn, authCheckOut]);
 
   useEffect(() => {
     fetchAttendance();
@@ -223,6 +275,8 @@ export default function StaffAttendance() {
         setActiveProjectId(selectedProjectId);
         setActiveProjectName(selectedProjectName);
 
+        authCheckIn(timeStr, now);
+
         addRecordToList({
           id,
           date: todayDate,
@@ -274,6 +328,8 @@ export default function StaffAttendance() {
         setActiveActivityType(null);
         setActiveProjectId(null);
         setActiveProjectName(null);
+
+        authCheckOut();
 
         toast.success('Checked out successfully');
       } catch {
@@ -357,7 +413,7 @@ export default function StaffAttendance() {
                   key={opt}
                   type="button"
                   onClick={() => {
-                    setActivityType(prev => (prev === opt ? '' : opt));
+                    setActivityType(opt);
                     setShowActivityDropdown(false);
                     if (opt !== 'Projects') {
                       setSelectedProjectId('');

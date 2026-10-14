@@ -20,7 +20,7 @@ export default function Login() {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedEmail = email.trim();
+    const trimmedEmail = email.trim().toLowerCase();
     if (!trimmedEmail || !password) { setError('Please enter email and password'); return; }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) { setError('Please enter a valid email address'); return; }
     if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
@@ -103,7 +103,7 @@ export default function Login() {
                   <input
                     type="email"
                     value={email}
-                    onChange={e => setEmail(e.target.value)}
+                    onChange={e => setEmail(e.target.value.toLowerCase())}
                     placeholder="you@example.com"
                     className="w-full h-13 px-4 py-3.5 bg-slate-50/80 border border-slate-200/80 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-green/30 focus:border-brand-green focus:bg-white transition-all outline-none"
                     autoComplete="email"
@@ -161,18 +161,6 @@ export default function Login() {
                   )}
                 </button>
               </form>
-
-              {/* Register link */}
-              <p className="mt-6 text-center text-sm text-slate-500">
-                New to Samy &amp; Co?{' '}
-                <button
-                  type="button"
-                  onClick={() => navigate('/register')}
-                  className="font-semibold text-brand-blue hover:text-blue-800 transition-colors"
-                >
-                  Create a partner account
-                </button>
-              </p>
             </div>
           </div>
         </div>

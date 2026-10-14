@@ -1,4 +1,12 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1';
+function resolveApiBase(): string {
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (envUrl) {
+    return envUrl.replace(/\/+$/, '');
+  }
+  return 'https://samyandco.in/api/v1';
+}
+
+export const API_BASE = resolveApiBase();
 export const UPLOADS_BASE = API_BASE.replace(/\/api\/v1\/?$/, '');
 
 interface ApiResponse<T = unknown> {
@@ -6,15 +14,21 @@ interface ApiResponse<T = unknown> {
   data: T;
   count?: number;
   total?: number;
+  stats?: Record<string, number>;
+  allocatedSqFt?: number;
   pagination?: {
     total?: number;
     pages?: number;
+    page?: number;
+    limit?: number;
     currentPage?: number;
     next?: { page: number; limit: number };
     prev?: { page: number; limit: number };
   };
   token?: string;
   error?: string;
+  emailSent?: boolean;
+  reused?: boolean;
 }
 
 class ApiClient {
@@ -49,7 +63,7 @@ class ApiClient {
   }
 
   private async request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | undefined>): Promise<ApiResponse<T>> {
-    const url = new URL(`${this.baseUrl}${path}`);
+    const url = new URL(`${this.baseUrl}${path}`, typeof window !== 'undefined' ? window.location.origin : 'https://samyandco.in');
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
         if (v !== undefined && v !== '') url.searchParams.set(k, String(v));

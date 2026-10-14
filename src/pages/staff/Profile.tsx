@@ -1,5 +1,6 @@
 import { Phone, Mail, Calendar, Users, User } from 'lucide-react';
 import { Avatar } from '@/components/shared/Avatar';
+import { ChangePasswordCard } from '@/components/ChangePasswordCard';
 import { useAuth } from '@/context/AuthContext';
 import { groupService } from '@/services';
 import { useState, useEffect } from 'react';
@@ -79,6 +80,8 @@ export default function StaffProfile() {
           </div>
         </div>
       </div>
+
+      <ChangePasswordCard />
     </div>
   );
 }

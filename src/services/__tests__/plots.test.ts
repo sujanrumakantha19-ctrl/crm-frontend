@@ -29,10 +29,10 @@ describe('plotService', () => {
     expect(mockApi.get).toHaveBeenCalledWith('/plots/pl1/pending-approval')
   })
 
-  it('getByProject should call GET /plots with projectId and limit', async () => {
+  it('getByProject should call GET /plots/project/:id with params', async () => {
     mockApi.get.mockResolvedValue({ success: true, data: [] })
-    await plotService.getByProject('proj1')
-    expect(mockApi.get).toHaveBeenCalledWith('/plots', { projectId: 'proj1', limit: 500 })
+    await plotService.getByProject('proj1', { page: 1, limit: 50 })
+    expect(mockApi.get).toHaveBeenCalledWith('/plots/project/proj1', { page: 1, limit: 50 })
   })
 
   it('getByStatus should call GET /plots/status/:status', async () => {

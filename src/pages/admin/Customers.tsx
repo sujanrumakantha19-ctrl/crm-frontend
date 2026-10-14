@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Phone, MapPin, UserCheck, Pencil, Building2, ChevronLeft, ChevronRight, ArrowUpDown, Home, X, CreditCard, Calendar, SlidersHorizontal, Clock } from 'lucide-react';
+import { Search, Phone, MapPin, UserCheck, Pencil, Building2, ChevronLeft, ChevronRight, ArrowUpDown, Home, X, CreditCard, Calendar, SlidersHorizontal, Clock, FileCheck } from 'lucide-react';
 import { Drawer } from '@/components/shared/Drawer';
 import { useDebounce } from '@/hooks/useDebounce';
 import { Avatar } from '@/components/shared/Avatar';
@@ -15,6 +15,7 @@ import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
 import { FollowerAutocomplete } from '@/components/shared/FollowerAutocomplete';
 import { useExportContext } from '@/context/ExportContext';
 import { formatDate, getTodayStr } from '@/lib/utils';
+import { extraBookingCount, asEntityId, normPhone10, unionMergeByKeys, customerIdentityKeys, bookingSlotCount } from '@/lib/customerBookingRows';
 
 /* ─── constants ─── */
 type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
@@ -84,11 +85,94 @@ const getLoanStageBadgeClass = (stage?: string) => {
   }
 };
 
+const isMongoHexId = (val?: any): boolean => {
+  if (!val) return false;
+  return typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val.trim());
+};
+
+interface ResolvedStaff {
+  name: string;
+  displayId?: string;
+}
+
+const resolveCustomerAssignedStaff = (
+  c: any,
+  plot?: any,
+  users?: { id: string; name: string; displayId?: string; role: string }[]
+): ResolvedStaff => {
+  let name = '';
+  let displayId = '';
+
+  // 1. Direct assignedToName / assignedToDisplayId on customer
+  const cName = c?.assignedToName?.trim();
+  const cDisplay = c?.assignedToDisplayId?.trim();
+  if (cName && !isMongoHexId(cName)) name = cName;
+  if (cDisplay && !isMongoHexId(cDisplay)) displayId = cDisplay;
+
+  // 2. Direct assignedTo object on customer (if populated)
+  if (c?.assignedTo && typeof c.assignedTo === 'object') {
+    if (!name && c.assignedTo.name && !isMongoHexId(c.assignedTo.name)) name = c.assignedTo.name.trim();
+    if (!displayId && c.assignedTo.displayId && !isMongoHexId(c.assignedTo.displayId)) displayId = c.assignedTo.displayId.trim();
+  }
+
+  // 3. From active booked plot
+  if (plot) {
+    const pStaffName = plot.bookedBy?.staffName?.trim();
+    const pStaffDisplay = plot.bookedBy?.staffDisplayId?.trim();
+    if (!name && pStaffName && !isMongoHexId(pStaffName)) name = pStaffName;
+    if (!displayId && pStaffDisplay && !isMongoHexId(pStaffDisplay)) displayId = pStaffDisplay;
+
+    const pAssignedName = (plot as any).assignedToName?.trim();
+    const pAssignedDisplay = (plot as any).assignedToDisplayId?.trim();
+    if (!name && pAssignedName && !isMongoHexId(pAssignedName)) name = pAssignedName;
+    if (!displayId && pAssignedDisplay && !isMongoHexId(pAssignedDisplay)) displayId = pAssignedDisplay;
+  }
+
+  // 4. Candidate IDs to look up in users
+  const candidateIds = [
+    typeof c?.assignedTo === 'string' ? c.assignedTo : (c?.assignedTo as any)?._id || (c?.assignedTo as any)?.id,
+    cDisplay,
+    displayId,
+    plot?.assignedTo,
+    plot?.bookedBy?.staffId,
+  ].filter(Boolean).map(id => String(id).trim());
+
+  if (users && users.length > 0) {
+    for (const cand of candidateIds) {
+      const found = users.find(u =>
+        String(u.id) === cand ||
+        (u.displayId && u.displayId.toUpperCase() === cand.toUpperCase())
+      );
+      if (found) {
+        if (!name && found.name && !isMongoHexId(found.name)) name = found.name.trim();
+        if (!displayId && found.displayId) displayId = found.displayId.trim();
+      }
+    }
+  }
+
+  // 5. If name is still missing and displayId is STAFF-X, search users by displayId
+  if (!name && displayId && users && users.length > 0) {
+    const found = users.find(u => u.displayId && u.displayId.toUpperCase() === displayId.toUpperCase());
+    if (found?.name && !isMongoHexId(found.name)) name = found.name.trim();
+  }
+
+  // 6. Fallback if raw assigned is non-hex and not a STAFF- ID
+  const rawAssigned = typeof c?.assignedTo === 'string' ? c.assignedTo.trim() : '';
+  if (!name && rawAssigned && !isMongoHexId(rawAssigned) && !rawAssigned.toUpperCase().startsWith('STAFF-')) {
+    name = rawAssigned;
+  }
+
+  if (isMongoHexId(name)) name = '';
+  if (isMongoHexId(displayId)) displayId = '';
+
+  return { name, displayId };
+};
+
 /* ─── component ─── */
 export default function AdminCustomers() {
   const navigate = useNavigate();
   const { role, userId } = useAuth();
-  const { triggerDownload } = useExportContext();
+  const { triggerDownload, setExportInfo } = useExportContext();
 
   /* ── filter state (consolidated) ── */
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -123,7 +207,8 @@ export default function AdminCustomers() {
   const [allBanks, setAllBanks] = useState<string[]>([]);
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [allPlots, setAllPlots] = useState<any[]>([]);
-  const [allUsers, setAllUsers] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [pageCustomerPlots, setPageCustomerPlots] = useState<any[]>([]);
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string; displayId?: string; role: string }[]>([]);
   const [whatsAppCustomer, setWhatsAppCustomer] = useState<{ phone: string; name: string } | null>(null);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
 
@@ -147,8 +232,18 @@ export default function AdminCustomers() {
     ]).then(([pRes, plRes, adminRes, staffRes]) => {
       setAllProjects((pRes.data || []).map((p: any) => ({ ...p, id: p.id || p._id })));
       setAllPlots(plRes.data || []);
-      const admins = (adminRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'admin' }));
-      const staff = (staffRes.data || []).map((u: any) => ({ id: u.id || u._id, name: u.name || u.displayId || '', role: 'staff' }));
+      const admins = (adminRes.data || []).map((u: any) => ({
+        id: u.id || u._id,
+        name: u.name || '',
+        displayId: u.displayId || '',
+        role: 'admin',
+      }));
+      const staff = (staffRes.data || []).map((u: any) => ({
+        id: u.id || u._id,
+        name: u.name || '',
+        displayId: u.displayId || '',
+        role: 'staff',
+      }));
       setAllUsers([...admins, ...staff]);
     });
   }, []);
@@ -289,6 +384,24 @@ export default function AdminCustomers() {
     return dates[0];
   }, [allPlots]);
 
+  const getCompletedRegistrationDate = useCallback((c: any) => {
+    if (!c) return '';
+    if (c.registrationDate) {
+      return String(c.registrationDate).split('T')[0];
+    }
+    const customerPlots = allPlots.filter(p =>
+      (p.bookedBy?.name && c.customerName && p.bookedBy.name.toLowerCase() === c.customerName.toLowerCase()) ||
+      (p.bookedBy?.phone && c.phone && p.bookedBy.phone === c.phone) ||
+      (c.plotId && String(p.id || (p as any)._id) === String(c.plotId))
+    );
+    for (const p of customerPlots) {
+      if (p.registrationDate) {
+        return String(p.registrationDate).split('T')[0];
+      }
+    }
+    return '';
+  }, [allPlots]);
+
   const getCustomerProjects = useCallback((c: any) => {
     if (!c) return [];
     const todayStr = new Date().toISOString().split('T')[0];
@@ -353,6 +466,7 @@ export default function AdminCustomers() {
       const f = filtersRef.current;
       const params: Record<string, any> = {
         status: 'Customer',
+        paymentMethod: 'LOAN',
         page: p,
         limit: 10,
         sort: SORT_API_MAP[f.sortBy] || '-createdAt',
@@ -397,23 +511,102 @@ export default function AdminCustomers() {
   /* ── re-fetch when committed filters change ── */
   useEffect(() => { fetchLeads(1, { replace: true, showRefreshing: items.length > 0 }); }, [committedFilters, fetchLeads]);
 
+  /* Export CSV must match on-screen Loans list (Customer + LOAN + active filters) */
+  useEffect(() => {
+    const f = committedFilters;
+    const params: Record<string, string> = {
+      status: 'Customer',
+      paymentMethod: 'LOAN',
+    };
+    if (role === 'staff' && userId) params.assignedTo = userId;
+    if (f.search) params.search = f.search;
+    if (f.bankFilter !== 'All') params.bank = f.bankFilter;
+    if (f.projectFilter !== 'All') params.projectId = f.projectFilter;
+    if (f.paymentStatusFilter !== 'All') params.paymentStatus = f.paymentStatusFilter;
+    if (f.loanStageFilter !== 'All') params.loanStage = f.loanStageFilter;
+    if (f.bookedByFilter !== 'All') {
+      const u = allUsers.find((user) => user.name === f.bookedByFilter);
+      if (u) params.assignedTo = u.id;
+      else params.assignedToName = f.bookedByFilter;
+    }
+    if (f.dateFrom) params['createdAt[gte]'] = `${f.dateFrom}T00:00:00.000Z`;
+    if (f.dateTo) params['createdAt[lte]'] = `${f.dateTo}T23:59:59.999Z`;
+
+    setExportInfo({
+      endpoint: '/export/customers',
+      filename: 'loans',
+      params,
+    });
+  }, [committedFilters, role, userId, allUsers, setExportInfo]);
+
   /* ── filtered list returned directly from DB ── */
   const searchFiltered = useMemo(() => {
     const f = committedFilters;
-    if (f.loanStageFilter === 'All') return items;
-    return items.filter(c => {
-      const stage = c.loanStage || (c.bookedBy?.loanStage) || 'Not Applied';
-      return stage === f.loanStageFilter;
-    });
+    let list = items;
+    if (f.loanStageFilter !== 'All') {
+      list = list.filter((c) => {
+        const stage = c.loanStage || c.bookedBy?.loanStage || 'Not Applied';
+        return stage === f.loanStageFilter;
+      });
+    }
+    return unionMergeByKeys(
+      list,
+      (c) => customerIdentityKeys({
+        name: c.customerName,
+        phone: c.phone,
+        displayId: c.displayId,
+        leadId: asEntityId(c.id || c._id),
+      }),
+      (a, b) => {
+        const aTime = new Date(a.createdAt || 0).getTime();
+        const bTime = new Date(b.createdAt || 0).getTime();
+        return bTime >= aTime ? b : a;
+      }
+    );
   }, [items, committedFilters]);
+
+  useEffect(() => {
+    const ids = searchFiltered
+      .map((c) => asEntityId(c.id || c._id))
+      .filter(Boolean)
+      .slice(0, 20)
+      .join(',');
+    if (!ids) {
+      setPageCustomerPlots([]);
+      return;
+    }
+    plotService.getCustomerBookings({ leadIds: ids }).then((res) => {
+      setPageCustomerPlots(res.data || []);
+    }).catch(() => {});
+  }, [searchFiltered]);
 
   const getCustomerBookedPlots = useCallback((c: any) => {
     if (!c) return [];
-    return allPlots.filter(p =>
-      (p.bookedBy?.name && c.customerName && p.bookedBy.name.toLowerCase() === c.customerName.toLowerCase()) ||
-      (p.bookedBy?.phone && c.phone && p.bookedBy.phone === c.phone)
-    );
-  }, [allPlots]);
+    const leadId = asEntityId(c.id || c._id);
+    const phone10 = normPhone10(c.phone);
+    const nameLower = c.customerName?.toLowerCase().trim() || '';
+    const pool = pageCustomerPlots.length ? pageCustomerPlots : allPlots;
+    const seen = new Set<string>();
+    return pool.filter((p) => {
+      const pid = asEntityId(p.id || p._id);
+      if (!pid || seen.has(pid)) return false;
+      const pLead = asEntityId(p.bookedBy?.leadId);
+      const pPhone = normPhone10(p.bookedBy?.phone || (p as any).leadInfo?.phone);
+      const pName = (p.bookedBy?.name || (p as any).leadInfo?.customerName || '').toLowerCase().trim();
+      const pDisplay = ((p as any).leadInfo?.displayId || '').toUpperCase().trim();
+      
+      const cDisplay = c.displayId ? String(c.displayId).toUpperCase().trim() : '';
+      
+      const match = (leadId && pLead && pLead === leadId)
+        || (phone10 && pPhone && pPhone === phone10)
+        || (nameLower && pName && pName === nameLower)
+        || (cDisplay && pDisplay && pDisplay === cDisplay);
+        
+      if (!match) return false;
+      seen.add(pid);
+      return true;
+    });
+  }, [allPlots, pageCustomerPlots]);
 
   /* ── per-row selected booking plot map ── */
   const [selectedPlotMap, setSelectedPlotMap] = useState<Record<string, string>>({});
@@ -437,11 +630,14 @@ export default function AdminCustomers() {
   const [editCustomerPlots, setEditCustomerPlots] = useState<Plot[]>([]);
   const [editSelectedPlotId, setEditSelectedPlotId] = useState<string>('lead_default');
   const [editPaymentStatus, setEditPaymentStatus] = useState('Not Paid');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
+  const [editInitialPaymentMethod, setEditInitialPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
   const [editBank, setEditBank] = useState('');
   const [editBankFollowerName, setEditBankFollowerName] = useState('');
   const [editBankFollowerPhone, setEditBankFollowerPhone] = useState('');
   const [editLoanStage, setEditLoanStage] = useState('Not Applied');
   const [editExpectedRegistrationDate, setEditExpectedRegistrationDate] = useState('');
+  const [editRegistrationDate, setEditRegistrationDate] = useState('');
   const [saving, setSaving] = useState(false);
 
   const formatPrice = (val?: number | string) => {
@@ -499,6 +695,9 @@ export default function AdminCustomers() {
     }
   };
 
+  const resolvePaymentMethod = (plotMethod?: string, leadMethod?: string): 'CASH' | 'LOAN' =>
+    plotMethod === 'LOAN' ? 'LOAN' : leadMethod === 'LOAN' ? 'LOAN' : 'CASH';
+
   const handleEditClick = (e: React.MouseEvent, customer: any) => {
     e.stopPropagation();
     const lid = customer.id || customer._id;
@@ -512,19 +711,27 @@ export default function AdminCustomers() {
     setEditSelectedPlotId(initialPlotId);
 
     if (initialPlotId !== 'lead_default' && activePlot) {
+      const method = resolvePaymentMethod(activePlot.bookedBy?.paymentMethod, customer.paymentMethod);
       setEditPaymentStatus(activePlot.bookedBy?.paymentStatus || 'Not Paid');
+      setEditPaymentMethod(method);
+      setEditInitialPaymentMethod(method);
       setEditBank(activePlot.bookedBy?.bank ?? '');
       setEditBankFollowerName(activePlot.bookedBy?.bankFollowerName ?? '');
       setEditBankFollowerPhone(activePlot.bookedBy?.bankFollowerPhone ?? '');
       setEditLoanStage(activePlot.bookedBy?.loanStage || 'Not Applied');
       setEditExpectedRegistrationDate(activePlot.expectedRegistrationDate ? String(activePlot.expectedRegistrationDate).split('T')[0] : '');
+      setEditRegistrationDate(activePlot.registrationDate ? String(activePlot.registrationDate).split('T')[0] : '');
     } else {
+      const method = resolvePaymentMethod(undefined, customer.paymentMethod);
       setEditPaymentStatus(customer.paymentStatus || 'Not Paid');
+      setEditPaymentMethod(method);
+      setEditInitialPaymentMethod(method);
       setEditBank(customer.bank || '');
       setEditBankFollowerName(customer.bankFollowerName || '');
       setEditBankFollowerPhone(customer.bankFollowerPhone || '');
       setEditLoanStage(customer.loanStage || (customer.bookedBy?.loanStage) || 'Not Applied');
       setEditExpectedRegistrationDate(customer.expectedRegistrationDate ? String(customer.expectedRegistrationDate).split('T')[0] : '');
+      setEditRegistrationDate('');
     }
 
     setEditModalOpen(true);
@@ -534,22 +741,30 @@ export default function AdminCustomers() {
     setEditSelectedPlotId(plotId);
     if (plotId === 'lead_default') {
       if (editingCustomer) {
+        const method = resolvePaymentMethod(undefined, editingCustomer.paymentMethod);
         setEditPaymentStatus(editingCustomer.paymentStatus || 'Not Paid');
+        setEditPaymentMethod(method);
+        setEditInitialPaymentMethod(method);
         setEditBank(editingCustomer.bank || '');
         setEditBankFollowerName(editingCustomer.bankFollowerName || '');
         setEditBankFollowerPhone(editingCustomer.bankFollowerPhone || '');
         setEditLoanStage(editingCustomer.loanStage || (editingCustomer.bookedBy?.loanStage) || 'Not Applied');
         setEditExpectedRegistrationDate(editingCustomer.expectedRegistrationDate ? String(editingCustomer.expectedRegistrationDate).split('T')[0] : '');
+        setEditRegistrationDate('');
       }
     } else {
       const target = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(plotId));
       if (target) {
+        const method = resolvePaymentMethod(target.bookedBy?.paymentMethod, editingCustomer?.paymentMethod);
         setEditPaymentStatus(target.bookedBy?.paymentStatus || 'Not Paid');
+        setEditPaymentMethod(method);
+        setEditInitialPaymentMethod(method);
         setEditBank(target.bookedBy?.bank ?? '');
         setEditBankFollowerName(target.bookedBy?.bankFollowerName ?? '');
         setEditBankFollowerPhone(target.bookedBy?.bankFollowerPhone ?? '');
         setEditLoanStage(target.bookedBy?.loanStage || 'Not Applied');
         setEditExpectedRegistrationDate(target.expectedRegistrationDate ? String(target.expectedRegistrationDate).split('T')[0] : '');
+        setEditRegistrationDate(target.registrationDate ? String(target.registrationDate).split('T')[0] : '');
       }
     }
   };
@@ -564,7 +779,14 @@ export default function AdminCustomers() {
     const hasAnyBankField = !!bName || !!bFollower || !!bPhone;
     const hasAllBankFields = !!bName && !!bFollower && !!bPhone;
 
-    if (hasAnyBankField && !hasAllBankFields) {
+    const switchedToLoan = editPaymentMethod === 'LOAN' && editInitialPaymentMethod !== 'LOAN';
+
+    if (switchedToLoan && !hasAllBankFields) {
+      toast.error('Bank Name, Follower Name, and Follower Mobile are required when switching to Loan payment mode.');
+      return;
+    }
+
+    if (editPaymentMethod === 'LOAN' && hasAnyBankField && !hasAllBankFields) {
       toast.error('If filling Bank details, Bank Name, Follower Name, and Follower Mobile are all mandatory.');
       return;
     }
@@ -577,11 +799,17 @@ export default function AdminCustomers() {
       }
     }
 
+    if (editPaymentMethod === 'LOAN' && editPaymentStatus === 'Fully Paid' && editLoanStage !== 'Disbursed') {
+      toast.error('Payment Status cannot be marked as "Fully Paid" while Loan Stage is still in progress (only permitted once Disbursed).');
+      return;
+    }
+
     setSaving(true);
     try {
       // 1. Update Lead Profile
       await leadService.update(editingCustomer.id, {
         paymentStatus: editPaymentStatus,
+        paymentMethod: editPaymentMethod,
         bank: bName,
         bankFollowerName: bFollower,
         bankFollowerPhone: bPhone,
@@ -590,25 +818,35 @@ export default function AdminCustomers() {
       } as any);
 
       // 2. If a specific plot booking was selected, update plot record too
+      let willRegister = false;
       if (editSelectedPlotId !== 'lead_default') {
         const targetPlot = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(editSelectedPlotId));
         if (targetPlot) {
+          willRegister = targetPlot.status === 'Booked' && !!editRegistrationDate;
           await plotService.update(editSelectedPlotId, {
             ...targetPlot,
             expectedRegistrationDate: editExpectedRegistrationDate || undefined,
+            ...(willRegister ? { registrationDate: editRegistrationDate } : {}),
             bookedBy: {
               ...targetPlot.bookedBy,
               paymentStatus: editPaymentStatus,
+              paymentMethod: editPaymentMethod,
               bank: bName,
               bankFollowerName: bFollower,
               bankFollowerPhone: bPhone,
               loanStage: editLoanStage,
             },
           });
+          if (willRegister) {
+            await plotService.registerPlot(editSelectedPlotId, {
+              registrationDate: editRegistrationDate,
+              paymentStatus: editPaymentStatus,
+            }).catch(() => {});
+          }
         }
       }
 
-      toast.success('Customer updated successfully');
+      toast.success(willRegister ? 'Plot registered and moved to the Registered tab' : 'Customer updated successfully');
       setEditModalOpen(false);
       setEditingCustomer(null);
       const plotRes = await plotService.getAll({ limit: 500 }).catch(() => ({ data: [] }));
@@ -645,6 +883,21 @@ export default function AdminCustomers() {
     return pages;
   }, [page, totalPages]);
 
+  const goToCustomerDetail = useCallback(
+    (customer: any) => {
+      const cId = customer.id || customer._id;
+      const plots = getCustomerBookedPlots(customer);
+      const plotId = plots[0] ? String(plots[0].id || (plots[0] as any)._id) : '';
+      const phone = String(customer.phone || '').replace(/\D/g, '').slice(-10);
+      const qs = new URLSearchParams();
+      if (plotId) qs.set('plotId', plotId);
+      if (phone.length === 10) qs.set('phone', phone);
+      const q = qs.toString();
+      navigate(`/${role}/customers/${asEntityId(cId)}${q ? `?${q}` : ''}`);
+    },
+    [getCustomerBookedPlots, navigate, role]
+  );
+
   const goToPage = (p: number) => {
     if (p < 1 || p > totalPages || p === page) return;
     fetchLeads(p, { replace: true, showRefreshing: true });
@@ -674,7 +927,7 @@ export default function AdminCustomers() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by name, phone, project, plot..."
+              placeholder="Search by name, phone, Customer ID (L-...), Staff ID (STAFF-...)..."
               value={filters.search}
               onChange={e => updateFilter('search', e.target.value)}
               className="w-full h-10 pl-9 pr-8 border border-slate-200 rounded-lg text-sm focus:border-brand-green focus:ring-2 focus:ring-emerald-100 outline-none transition-all bg-white"
@@ -767,14 +1020,14 @@ export default function AdminCustomers() {
               {allUsers.filter(u => u.role === 'admin').length > 0 && (
                 <optgroup label="── Admin ──">
                   {allUsers.filter(u => u.role === 'admin').map(u => (
-                    <option key={u.id} value={u.name}>{u.name}</option>
+                    <option key={u.id} value={u.name}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                   ))}
                 </optgroup>
               )}
               {allUsers.filter(u => u.role === 'staff').length > 0 && (
                 <optgroup label="── Staff ──">
                   {allUsers.filter(u => u.role === 'staff').map(u => (
-                    <option key={u.id} value={u.name}>{u.name}</option>
+                    <option key={u.id} value={u.name}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                   ))}
                 </optgroup>
               )}
@@ -856,16 +1109,40 @@ export default function AdminCustomers() {
                 <tbody className="divide-y divide-slate-100">
                   {searchFiltered.map(c => {
                     const cId = c.id || c._id;
-                    const custProjects = getCustomerProjects(c);
-                    const primaryProj = custProjects[0]?.project;
-                    const extraCount = custProjects.length > 1 ? custProjects.length - 1 : 0;
-                    const extraNames = custProjects.slice(1).map(p => `${p.project.name} [${p.project.displayId || ''}]`).join(', ');
+                    const custPlots = getCustomerBookedPlots(c);
+                    const activePlot = getActivePlotForCustomer(c) || custPlots[0];
+                    const activePlotId = asEntityId(activePlot?.id || (activePlot as any)?._id);
+                    const activePlotNum = String(activePlot?.plotNumber || '').trim();
+                    const extraPlots = custPlots.filter(p => {
+                      const pid = asEntityId(p.id || (p as any)._id);
+                      if (pid && activePlotId) return pid !== activePlotId;
+                      return String(p.plotNumber || '').trim() !== activePlotNum;
+                    });
+                    const extraCount = extraPlots.length;
+                    const extraLabels = extraPlots
+                      .map((p) => {
+                        const pid = typeof p.projectId === 'object' ? (p.projectId as { name?: string; displayId?: string }) : null;
+                        const name = pid?.name || 'Project';
+                        const did = pid?.displayId ? ` [${pid.displayId}]` : '';
+                        return `${name}${did} Plot ${p.plotNumber}`;
+                      })
+                      .join(', ');
 
-                    const pProjId = c.projectId ? (typeof c.projectId === 'object' ? c.projectId._id || c.projectId.id : c.projectId) : undefined;
-                    const projObj = pProjId ? allProjects.find(pr => String(pr.id || pr._id) === String(pProjId)) : primaryProj;
-                    const projName = projObj ? projObj.name : (primaryProj ? primaryProj.name : '—');
-                    const projDisplayId = projObj ? (projObj.displayId || '') : (primaryProj ? (primaryProj.displayId || '') : '');
-                    const plotNum = c.plotNumber || custProjects[0]?.latestPlotNumber || '—';
+
+                    const pProjId = activePlot
+                      ? (typeof activePlot.projectId === 'object'
+                        ? (activePlot.projectId as any)._id || (activePlot.projectId as any).id
+                        : activePlot.projectId)
+                      : c.projectId
+                        ? (typeof c.projectId === 'object' ? c.projectId._id || c.projectId.id : c.projectId)
+                        : undefined;
+                    const projObj = pProjId
+                      ? allProjects.find(pr => String(pr.id || pr._id) === String(pProjId))
+                      : undefined;
+                    const embeddedProj = activePlot && typeof activePlot.projectId === 'object' ? activePlot.projectId as any : null;
+                    const projName = projObj?.name || embeddedProj?.name || '—';
+                    const projDisplayId = projObj?.displayId || embeddedProj?.displayId || '';
+                    const plotNum = activePlot?.plotNumber || c.plotNumber || '—';
 
                     const expDate = getExpectedRegistrationDate(c);
                     const todayStr = getTodayStr();
@@ -883,13 +1160,15 @@ export default function AdminCustomers() {
                     const lid = cId;
 
                     return (
-                      <tr key={cId} className="hover:bg-slate-50/70 transition-colors cursor-pointer group" onClick={() => navigate(`/${role}/customers/${cId}`)}>
+                      <tr key={cId} className="hover:bg-slate-50/70 transition-colors cursor-pointer group" onClick={() => goToCustomerDetail(c)}>
                         {/* 1. Customer & Contact */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${cId}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <div className="flex items-center gap-2.5">
                             <Avatar initials={getInitials(c.customerName)} size="sm" bg={getAvatarColor(c.customerName)} />
                             <div className="flex flex-col">
-                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm"><NameTag name={c.customerName} displayId={c.displayId} /></span>
+                              <span className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors text-sm">
+                                <NameTag name={c.customerName} displayId={c.displayId} />
+                              </span>
                               <div className="flex items-center gap-1 text-xs text-slate-500 font-medium mt-0.5">
                                 <Phone size={11} className="text-slate-400" />
                                 <span>{c.phone || '—'}</span>
@@ -903,20 +1182,13 @@ export default function AdminCustomers() {
                                     <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.003 5.291 5.3 0 11.799 0c3.148.001 6.108 1.228 8.334 3.457 2.227 2.229 3.452 5.19 3.45 8.34-.004 6.502-5.302 11.793-11.8 11.793a11.72 11.72 0 0 1-5.905-1.582L0 24zm6.549-3.791c1.472.873 2.924 1.34 4.703 1.341 5.485 0 9.948-4.457 9.951-9.94.002-2.656-1.03-5.153-2.905-7.03C16.48 2.705 13.987 1.666 11.797 1.667c-5.49 0-9.952 4.453-9.955 9.937-.001 1.83.483 3.61 1.4 5.161l-.979 3.57 3.655-.959c1.488.81 2.927 1.233 4.689 1.233zm11.302-7.608c-.307-.154-1.821-.899-2.101-.998-.28-.1-.484-.15-.688.156-.204.307-.79.99-.968 1.2-.178.209-.356.234-.664.08-1.124-.564-1.868-.93-2.613-2.204-.199-.34-.199-.546-.073-.728.115-.164.307-.356.462-.534.156-.178.208-.303.312-.507.105-.205.052-.385-.026-.539-.078-.154-.688-1.659-.942-2.27-.247-.595-.5-.515-.688-.525-.178-.009-.382-.01-.587-.01-.205 0-.539.077-.821.385-.282.307-1.078 1.053-1.078 2.569 0 1.516 1.102 2.985 1.256 3.19.154.205 2.169 3.312 5.254 4.643.734.317 1.307.506 1.754.648.74.235 1.414.201 1.947.122.593-.088 1.821-.745 2.076-1.463.254-.718.254-1.333.178-1.463-.076-.13-.28-.205-.588-.359z" /></svg>
                                   </button>
                                 )}
-                                {extraCount > 0 && (
-                                  <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0"
-                                    title={`Also in: ${extraNames}`}
-                                  >
-                                    +{extraCount} more
-                                  </span>
-                                )}
                               </div>
                             </div>
                           </div>
                         </td>
 
                         {/* 2. Property / Plot */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${cId}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <div className="flex flex-col gap-0.5 max-w-[210px]" title={`${projName}${projDisplayId ? ` [${projDisplayId}]` : ''}${surveyNum && surveyNum !== '—' ? ` | Survey: ${surveyNum}` : ''}`}>
                             <div className="flex items-center gap-1 text-slate-900 font-semibold text-xs truncate">
                               <Building2 size={12} className="text-slate-400 shrink-0" />
@@ -933,8 +1205,8 @@ export default function AdminCustomers() {
                                 </span>
                               )}
                               {extraCount > 0 && (
-                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also in: ${extraNames}`}>
-                                  +{extraCount} more
+                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also booked: ${extraLabels}`}>
+                                  +{extraCount}
                                 </span>
                               )}
                             </div>
@@ -942,7 +1214,7 @@ export default function AdminCustomers() {
                         </td>
 
                         {/* 3. Location & Source */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${cId}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <div className="flex flex-col gap-0.5 max-w-[150px]" title={`${c.city || '—'} | ${c.source || '—'}`}>
                             <div className="flex items-center gap-1 text-xs font-bold text-slate-800 truncate">
                               <MapPin size={11} className="text-amber-500 shrink-0" />
@@ -953,19 +1225,33 @@ export default function AdminCustomers() {
                         </td>
 
                         {/* 4. Assigned To */}
-                        <td className="px-4 py-3.5 whitespace-nowrap text-xs font-semibold text-slate-700" onClick={() => navigate(`/${role}/customers/${lid}`)}>
-                          {c.assignedToDisplayId || c.assignedToName || '—'}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
+                          {(() => {
+                            const assigned = resolveCustomerAssignedStaff(c, activePlot, allUsers);
+                            return (
+                              <div className="flex flex-col">
+                                <span className="font-bold text-slate-900 text-xs">
+                                  {assigned.name || assigned.displayId || '—'}
+                                </span>
+                                {assigned.name && assigned.displayId && (
+                                  <span className="text-[10px] text-slate-400 font-medium">
+                                    {assigned.displayId}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         {/* 5. Loan Stage */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <span className={`inline-block px-2.5 py-1 rounded text-xs font-bold border ${getLoanStageBadgeClass(loanStage)}`}>
                             {loanStage}
                           </span>
                         </td>
 
                         {/* 6. Bank & Follower */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <div className="flex flex-col gap-0.5 max-w-[180px]" title={`${activeBank} - ${activeFollowerName} (${activeFollowerPhone})`}>
                             <span className="text-xs font-bold text-slate-900 truncate">{activeBank}</span>
                             {activeFollowerName ? (
@@ -978,14 +1264,29 @@ export default function AdminCustomers() {
                           </div>
                         </td>
 
-                        {/* 7. Expected Reg. Date */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
+                        {/* 7. Expected / Completed Reg. Date */}
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           {(() => {
                             const expDate = activeExpDate;
+                            const regDate = getCompletedRegistrationDate(c);
                             const todayStr = getTodayStr();
                             const tomorrowStr = getTomorrowStr();
                             const isToday = expDate === todayStr;
                             const isTomorrow = expDate === tomorrowStr;
+
+                            if (regDate) {
+                              return (
+                                <div className="flex flex-col gap-0.5 items-start">
+                                  <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
+                                    <FileCheck size={12} className="text-emerald-600" />
+                                    {formatDate(regDate)}
+                                  </span>
+                                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.5 rounded shadow-xs">
+                                    Registered
+                                  </span>
+                                </div>
+                              );
+                            }
 
                             return (
                               <div className="flex flex-col gap-0.5 items-start">
@@ -1015,7 +1316,7 @@ export default function AdminCustomers() {
                         </td>
 
                         {/* 8. Payment Status */}
-                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => navigate(`/${role}/customers/${lid}`)}>
+                        <td className="px-4 py-3.5 whitespace-nowrap" onClick={() => goToCustomerDetail(c)}>
                           <StatusBadge status={activePaymentStatus} />
                         </td>
 
@@ -1037,8 +1338,10 @@ export default function AdminCustomers() {
           <div className="md:hidden space-y-3">
             {searchFiltered.map(c => {
               const lid = c.id || c._id;
+              const custPlots = getCustomerBookedPlots(c);
+              const activePlot = getActivePlotForCustomer(c) || custPlots[0];
               return (
-                <div key={lid} onClick={() => navigate(`/${role}/customers/${lid}`)} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer active:bg-slate-50 transition-colors">
+                <div key={lid} onClick={() => goToCustomerDetail(c)} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer active:bg-slate-50 transition-colors">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Avatar initials={getInitials(c.customerName)} size="sm" bg={getAvatarColor(c.customerName)} />
@@ -1059,13 +1362,34 @@ export default function AdminCustomers() {
                     </div>
                     <div><span className="text-slate-400">City:</span> {c.city || '—'}</div>
                     {(() => {
-                      const custProjects = getCustomerProjects(c);
-                      const primaryProj = custProjects[0]?.project;
-                      const projName = primaryProj ? primaryProj.name : getProjectName(c);
-                      const projDisplayId = primaryProj ? primaryProj.displayId : getProjectDisplayId(c);
-                      const plotNum = custProjects[0]?.latestPlotNumber || getPlotNumber(c);
-                      const extraCount = custProjects.length > 1 ? custProjects.length - 1 : 0;
-                      const extraNames = custProjects.slice(1).map(p => `${p.project.name} [${p.project.displayId || ''}]`).join(', ');
+                      const custPlots = getCustomerBookedPlots(c);
+                      const activePlot = getActivePlotForCustomer(c) || custPlots[0];
+                      const activePlotId = asEntityId(activePlot?.id || (activePlot as any)?._id);
+                      const activePlotNum = String(activePlot?.plotNumber || '').trim();
+                      const extraPlots = custPlots.filter(p => {
+                        const pid = asEntityId(p.id || (p as any)._id);
+                        if (pid && activePlotId) return pid !== activePlotId;
+                        return String(p.plotNumber || '').trim() !== activePlotNum;
+                      });
+                      const extraCount = extraPlots.length;
+                      const extraLabels = extraPlots
+                        .map((p) => {
+                          const pid = typeof p.projectId === 'object' ? (p.projectId as { name?: string; displayId?: string }) : null;
+                          const name = pid?.name || 'Project';
+                          const did = pid?.displayId ? ` [${pid.displayId}]` : '';
+                          return `${name}${did} Plot ${p.plotNumber}`;
+                        })
+                        .join(', ');
+                      const pProjId = activePlot
+                        ? (typeof activePlot.projectId === 'object'
+                          ? (activePlot.projectId as any)._id || (activePlot.projectId as any).id
+                          : activePlot.projectId)
+                        : undefined;
+                      const projObj = pProjId ? allProjects.find(pr => String(pr.id || pr._id) === String(pProjId)) : undefined;
+                      const embeddedProj = activePlot && typeof activePlot.projectId === 'object' ? activePlot.projectId as any : null;
+                      const projName = projObj?.name || embeddedProj?.name || getProjectName(c);
+                      const projDisplayId = projObj?.displayId || embeddedProj?.displayId || getProjectDisplayId(c);
+                      const plotNum = activePlot?.plotNumber || getPlotNumber(c);
 
                       return (
                         <>
@@ -1074,8 +1398,8 @@ export default function AdminCustomers() {
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span className="font-medium text-slate-800 truncate"><NameTag name={projName} displayId={projDisplayId} /></span>
                               {extraCount > 0 && (
-                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also in: ${extraNames}`}>
-                                  +{extraCount} more
+                                <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also booked: ${extraLabels}`}>
+                                  +{extraCount}
                                 </span>
                               )}
                             </div>
@@ -1084,16 +1408,54 @@ export default function AdminCustomers() {
                         </>
                       );
                     })()}
-                    <div><span className="text-slate-400">Source:</span> {c.source || '—'}</div>
-                    <div><span className="text-slate-400">Assigned:</span> {c.assignedToDisplayId || c.assignedToName || '—'}</div>
+                    <div>
+                      <span className="text-slate-400">Assigned:</span>{' '}
+                      {(() => {
+                        const assigned = resolveCustomerAssignedStaff(c, activePlot, allUsers);
+                        return (
+                          <span className="font-bold text-slate-800">
+                            {assigned.name ? (
+                              <>
+                                <span>{assigned.name}</span>
+                                {assigned.displayId && (
+                                  <span className="text-[10px] text-slate-400 font-medium ml-1">
+                                    ({assigned.displayId})
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              assigned.displayId || '—'
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </div>
                     <div className="col-span-2"><span className="text-slate-400 font-semibold">Bank:</span> <span className="font-semibold text-slate-800">{c.bank || '—'}</span></div>
                     <div className="col-span-2"><span className="text-slate-400 font-semibold">Bank Follower:</span> <span className="font-semibold text-slate-800">{c.bankFollowerName || '—'}</span>{c.bankFollowerPhone && <span className="text-slate-500 ml-1">({c.bankFollowerPhone})</span>}</div>
                     {(() => {
                       const expDate = getExpectedRegistrationDate(c);
+                      const regDate = getCompletedRegistrationDate(c);
                       const todayStr = getTodayStr();
                       const tomorrowStr = getTomorrowStr();
                       const isToday = expDate === todayStr;
                       const isTomorrow = expDate === tomorrowStr;
+
+                      if (regDate) {
+                        return (
+                          <div className="col-span-2 flex items-center justify-between border-t border-slate-100 pt-2 mt-1">
+                            <span className="text-slate-400 text-xs">Registration Date:</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
+                                <FileCheck size={12} className="text-emerald-600" />
+                                {formatDate(regDate)}
+                              </span>
+                              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.5 rounded">
+                                Registered
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      }
 
                       return (
                         <div className="col-span-2 flex items-center justify-between border-t border-slate-100 pt-2 mt-1">
@@ -1189,6 +1551,18 @@ export default function AdminCustomers() {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">Payment Mode</label>
+            <select
+              value={editPaymentMethod}
+              onChange={e => setEditPaymentMethod(e.target.value as 'CASH' | 'LOAN')}
+              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium"
+            >
+              <option value="CASH">Direct Cash</option>
+              <option value="LOAN">Loan</option>
+            </select>
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1">Loan Stage</label>
             <select value={editLoanStage} onChange={e => setEditLoanStage(e.target.value)} className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none font-medium">
               {LOAN_STAGES.filter(s => s !== 'All').map(stage => (
@@ -1196,6 +1570,24 @@ export default function AdminCustomers() {
               ))}
             </select>
           </div>
+
+          {editSelectedPlotId !== 'lead_default' && (() => {
+            const selected = editCustomerPlots.find(p => String(p.id || (p as any)._id) === String(editSelectedPlotId));
+            return selected?.status === 'Booked';
+          })() && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1">Registration Date</label>
+              <input
+                type="date"
+                value={editRegistrationDate}
+                onChange={e => setEditRegistrationDate(e.target.value)}
+                className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                If you set this date, the plot is registered and moves to Registrations → Registered.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1">Expected Registration Date</label>
@@ -1207,52 +1599,56 @@ export default function AdminCustomers() {
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>
-            <FollowerAutocomplete
-              id="cust-follower-name"
-              value={editBankFollowerName}
-              onChange={setEditBankFollowerName}
-              onSelect={opt => {
-                setEditBankFollowerName(opt.name);
-                if (opt.bank) setEditBank(opt.bank);
-                if (opt.phone) setEditBankFollowerPhone(opt.phone);
-              }}
-              options={existingBankFollowers}
-              placeholder="Select existing or type new follower name..."
-            />
-          </div>
+          {editPaymentMethod === 'LOAN' && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Name</label>
+                <FollowerAutocomplete
+                  id="cust-follower-name"
+                  value={editBankFollowerName}
+                  onChange={setEditBankFollowerName}
+                  onSelect={opt => {
+                    setEditBankFollowerName(opt.name);
+                    if (opt.bank) setEditBank(opt.bank);
+                    if (opt.phone) setEditBankFollowerPhone(opt.phone);
+                  }}
+                  options={existingBankFollowers}
+                  placeholder="Select existing or type new follower name..."
+                />
+              </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Mobile No</label>
-            <input
-              type="tel"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={editBankFollowerPhone}
-              onChange={e => setEditBankFollowerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="Enter 10-digit mobile number..."
-              maxLength={10}
-              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
-            />
-          </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Follower Mobile No</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={editBankFollowerPhone}
+                  onChange={e => setEditBankFollowerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="Enter 10-digit mobile number..."
+                  maxLength={10}
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+              </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Name</label>
-            <input
-              type="text"
-              list="existing-banks-list"
-              value={editBank}
-              onChange={e => handleBankChange(e.target.value)}
-              placeholder="Select existing or type new bank name..."
-              className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
-            />
-            <datalist id="existing-banks-list">
-              {existingBanks.map(b => (
-                <option key={b} value={b} />
-              ))}
-            </datalist>
-          </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Bank Name</label>
+                <input
+                  type="text"
+                  list="existing-banks-list"
+                  value={editBank}
+                  onChange={e => handleBankChange(e.target.value)}
+                  placeholder="Select existing or type new bank name..."
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none"
+                />
+                <datalist id="existing-banks-list">
+                  {existingBanks.map(b => (
+                    <option key={b} value={b} />
+                  ))}
+                </datalist>
+              </div>
+            </>
+          )}
 
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => { setEditModalOpen(false); setEditingCustomer(null); }} className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
@@ -1332,14 +1728,14 @@ export default function AdminCustomers() {
                 {allUsers.filter(u => u.role === 'admin').length > 0 && (
                   <optgroup label="── Admin ──">
                     {allUsers.filter(u => u.role === 'admin').map(u => (
-                      <option key={u.id} value={u.name}>{u.name}</option>
+                      <option key={u.id} value={u.name}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                     ))}
                   </optgroup>
                 )}
                 {allUsers.filter(u => u.role === 'staff').length > 0 && (
                   <optgroup label="── Staff ──">
                     {allUsers.filter(u => u.role === 'staff').map(u => (
-                      <option key={u.id} value={u.name}>{u.name}</option>
+                      <option key={u.id} value={u.name}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                     ))}
                   </optgroup>
                 )}

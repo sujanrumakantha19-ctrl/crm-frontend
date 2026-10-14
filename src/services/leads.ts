@@ -72,8 +72,15 @@ export const leadService = {
   getAll(params?: LeadQuery) {
     return api.get<Lead[]>('/leads', params as Record<string, string | number | undefined>);
   },
-  getCounts() {
-    return api.get<{ Open: number; Reserved: number; Qualified: number; Unqualified: number; Customer: number }>('/leads/counts');
+  getCounts(params?: { assignedTo?: string; sourceId?: string; search?: string }) {
+    return api.get<{
+      All: number;
+      Open: number;
+      Reserved: number;
+      Qualified: number;
+      Unqualified: number;
+      Customer: number;
+    }>('/leads/counts', params);
   },
   getById(id: string) {
     return api.get<Lead>(`/leads/${id}`);

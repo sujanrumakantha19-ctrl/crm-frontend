@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { Avatar } from '@/components/shared/Avatar';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { activityLogService } from '@/services';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -10,7 +11,7 @@ export default function AdminActivityLogs() {
   const [actorFilter, setActorFilter] = useState('All');
   const [actionFilter, setActionFilter] = useState('All');
   const [searchTerm, setSearchTerm] = useState('');
-  const debouncedSearch = useDebounce(searchTerm, 1000);
+  const debouncedSearch = useDebounce(searchTerm, 500);
 
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -183,50 +184,14 @@ export default function AdminActivityLogs() {
       )}
 
       {/* Backend React Pagination Controls */}
-      {totalPages > 1 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border border-slate-200 rounded-lg bg-white shadow-sm">
-          <p className="text-xs text-slate-500 font-medium">
-            Showing <span className="font-bold text-slate-800">{(page - 1) * perPage + 1}</span> to{' '}
-            <span className="font-bold text-slate-800">{Math.min(page * perPage, totalCount)}</span> of{' '}
-            <span className="font-bold text-slate-800">{totalCount}</span> activity logs
-          </p>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => page > 1 && fetchLogs(page - 1)}
-              disabled={page === 1}
-              className="px-2.5 py-1 border border-slate-200 rounded text-xs font-semibold text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-30 transition-colors flex items-center gap-1"
-            >
-              <ChevronLeft size={13} /> Previous
-            </button>
-            {Array.from({ length: Math.min(5, totalPages) }, (_, idx) => {
-              let pNum = idx + 1;
-              if (totalPages > 5 && page > 3) {
-                pNum = Math.min(totalPages, page - 2 + idx);
-              }
-              return (
-                <button
-                  key={pNum}
-                  onClick={() => fetchLogs(pNum)}
-                  className={`w-7 h-7 rounded text-xs font-bold transition-all ${
-                    page === pNum
-                      ? 'bg-brand-blue text-white shadow-sm'
-                      : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {pNum}
-                </button>
-              );
-            })}
-            <button
-              onClick={() => page < totalPages && fetchLogs(page + 1)}
-              disabled={page === totalPages}
-              className="px-2.5 py-1 border border-slate-200 rounded text-xs font-semibold text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-30 transition-colors flex items-center gap-1"
-            >
-              Next <ChevronRight size={13} />
-            </button>
-          </div>
-        </div>
-      )}
+      <PaginationControls
+        currentPage={page}
+        totalPages={totalPages}
+        onPageChange={fetchLogs}
+        totalCount={totalCount}
+        perPage={perPage}
+        itemName="activity logs"
+      />
     </div>
   );
 }

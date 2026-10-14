@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Download, Users, ListChecks, Phone, Calendar, Search, Building2, X, ChevronLeft, ChevronRight, Filter, UserPlus } from 'lucide-react';
-import { leadService, taskService, attendanceService, projectService } from '@/services';
+import { useNavigate } from 'react-router-dom';
+import { Download, Users, ListChecks, Phone, Calendar, Search, Building2, X, ChevronLeft, ChevronRight, Filter, UserPlus, RotateCcw } from 'lucide-react';
+import { leadService, taskService, attendanceService, projectService, reportService } from '@/services';
+import type { OperationsMetricsData } from '@/services/report';
+import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { Avatar } from '@/components/shared/Avatar';
 import { getInitials, getAvatarColor } from '@/data/mockData';
@@ -23,7 +26,7 @@ import {
   Pie,
 } from 'recharts';
 
-type TabType = 'overview' | 'leads' | 'tasks' | 'attendance';
+type TabType = 'overview' | 'operations' | 'leads' | 'tasks' | 'attendance';
 
 const MONTH_OPTIONS = [
   { value: 'All', label: 'All Months' },
@@ -56,6 +59,7 @@ const formatDate = (dateStr: string) => {
 };
 
 export default function StaffReports() {
+  const navigate = useNavigate();
   const { setExportInfo, triggerDownload } = useExportContext();
   const { userId, user, role } = useAuth();
 
@@ -65,6 +69,10 @@ export default function StaffReports() {
   /* ── Month & Year Filters State (specifically for Overview tab) ── */
   const [selectedYear, setSelectedYear] = useState<string>('All');
   const [selectedMonth, setSelectedMonth] = useState<string>('All');
+
+  const [opsFilters, setOpsFilters] = useState({ month: '', year: '', dateFrom: '', dateTo: '' });
+  const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
+  const [opsLoading, setOpsLoading] = useState(false);
 
   /* ── Master summary stats ── */
   const [summaryLeads, setSummaryLeads] = useState<Lead[]>([]);
@@ -89,7 +97,7 @@ export default function StaffReports() {
   const [leadProject, setLeadProject] = useState('All');
   const [leadDateFrom, setLeadDateFrom] = useState('');
   const [leadDateTo, setLeadDateTo] = useState('');
-  const debouncedLeadSearch = useDebounce(leadSearch, 1000); // 1000ms debounce
+  const debouncedLeadSearch = useDebounce(leadSearch, 500); // 500ms debounce
 
   // Tab 3: Tasks data
   const [tasksData, setTasksData] = useState<Task[]>([]);
@@ -98,7 +106,7 @@ export default function StaffReports() {
   const [taskPriority, setTaskPriority] = useState('All');
   const [taskDateFrom, setTaskDateFrom] = useState('');
   const [taskDateTo, setTaskDateTo] = useState('');
-  const debouncedTaskSearch = useDebounce(taskSearch, 1000);
+  const debouncedTaskSearch = useDebounce(taskSearch, 500);
 
   // Tab 4: Attendance data
   const [attendanceData, setAttendanceData] = useState<AttendanceRecord[]>([]);
@@ -170,9 +178,32 @@ export default function StaffReports() {
     setSummaryLoading(false);
   }, [userId, dateRange]);
 
+  const fetchOperationsMetrics = useCallback(async () => {
+    setOpsLoading(true);
+    try {
+      const res = await reportService.getOperationsMetrics({
+        month: opsFilters.month || undefined,
+        year: opsFilters.year || undefined,
+        dateFrom: opsFilters.dateFrom || undefined,
+        dateTo: opsFilters.dateTo || undefined,
+      });
+      setOpsMetrics(res.data || (res as unknown as OperationsMetricsData));
+    } catch {
+      setOpsMetrics(null);
+    } finally {
+      setOpsLoading(false);
+    }
+  }, [opsFilters]);
+
   useEffect(() => {
     fetchSummaryStats();
   }, [fetchSummaryStats]);
+
+  useEffect(() => {
+    if (activeTab === 'operations') {
+      fetchOperationsMetrics();
+    }
+  }, [activeTab, fetchOperationsMetrics]);
 
   useEffect(() => {
     if (role !== 'admin') return;
@@ -473,6 +504,7 @@ export default function StaffReports() {
         <div className="flex gap-2 flex-wrap">
           {[
             { key: 'overview' as const, label: 'Overview' },
+            { key: 'operations' as const, label: 'Bookings & Loans' },
             { key: 'leads' as const, label: 'My Leads Report' },
             { key: 'tasks' as const, label: 'My Tasks Report' },
             { key: 'attendance' as const, label: 'Attendance Report' },
@@ -656,6 +688,108 @@ export default function StaffReports() {
           </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Bookings & Loans Tab ── */}
+      {activeTab === 'operations' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <Filter size={16} className="text-brand-blue" />
+                <span>Date Filters for Bookings &amp; Loans</span>
+              </div>
+              {(opsFilters.month || opsFilters.year || opsFilters.dateFrom || opsFilters.dateTo) && (
+                <button
+                  type="button"
+                  onClick={() => setOpsFilters({ month: '', year: '', dateFrom: '', dateTo: '' })}
+                  className="flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700 hover:underline"
+                >
+                  <RotateCcw size={12} /> Clear Filters
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div>
+                <label className="block text-slate-500 font-medium mb-1">Month</label>
+                <select
+                  value={opsFilters.month}
+                  onChange={e => {
+                    const month = e.target.value;
+                    setOpsFilters(prev => {
+                      const next = { ...prev, month };
+                      if (month && prev.year) {
+                        const mNum = parseInt(month, 10);
+                        const yNum = parseInt(prev.year, 10);
+                        const lastDay = new Date(yNum, mNum, 0).getDate();
+                        next.dateFrom = `${yNum}-${String(mNum).padStart(2, '0')}-01`;
+                        next.dateTo = `${yNum}-${String(mNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+                      }
+                      return next;
+                    });
+                  }}
+                  className="w-full h-9 px-3 border border-slate-200 rounded-md bg-white text-slate-700 font-medium"
+                >
+                  <option value="">All Months</option>
+                  {MONTH_OPTIONS.filter(m => m.value !== 'All').map(m => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-500 font-medium mb-1">Year</label>
+                <select
+                  value={opsFilters.year}
+                  onChange={e => {
+                    const year = e.target.value;
+                    setOpsFilters(prev => {
+                      const next = { ...prev, year };
+                      if (prev.month && year) {
+                        const mNum = parseInt(prev.month, 10);
+                        const yNum = parseInt(year, 10);
+                        const lastDay = new Date(yNum, mNum, 0).getDate();
+                        next.dateFrom = `${yNum}-${String(mNum).padStart(2, '0')}-01`;
+                        next.dateTo = `${yNum}-${String(mNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+                      }
+                      return next;
+                    });
+                  }}
+                  className="w-full h-9 px-3 border border-slate-200 rounded-md bg-white text-slate-700 font-medium"
+                >
+                  <option value="">All Years</option>
+                  {YEAR_OPTIONS.filter(y => y !== 'All').map(y => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-500 font-medium mb-1">From Date</label>
+                <input
+                  type="date"
+                  value={opsFilters.dateFrom}
+                  onChange={e => setOpsFilters(prev => ({ ...prev, dateFrom: e.target.value }))}
+                  className="w-full h-9 px-3 border border-slate-200 rounded-md bg-white text-slate-700 font-medium"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-500 font-medium mb-1">To Date</label>
+                <input
+                  type="date"
+                  value={opsFilters.dateTo}
+                  onChange={e => setOpsFilters(prev => ({ ...prev, dateTo: e.target.value }))}
+                  className="w-full h-9 px-3 border border-slate-200 rounded-md bg-white text-slate-700 font-medium"
+                />
+              </div>
+            </div>
+          </div>
+
+          <OperationsMetricsCards
+            metrics={opsMetrics}
+            loading={opsLoading}
+            role={role}
+            onNavigate={navigate}
+          />
         </div>
       )}
 
@@ -1021,7 +1155,7 @@ export default function StaffReports() {
       )}
 
       {/* ── 5. Server-Driven React Pagination (12 items per page) ── */}
-      {activeTab !== 'overview' && totalPages > 1 && (
+      {activeTab !== 'overview' && activeTab !== 'operations' && totalPages > 1 && (
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm mt-4">
           <p className="text-xs text-slate-500 font-medium">
             Showing <span className="font-semibold text-slate-800">{(page - 1) * limit + 1}</span> to <span className="font-semibold text-slate-800">{Math.min(page * limit, totalCount)}</span> of <span className="font-semibold text-slate-800">{totalCount}</span> records

@@ -156,7 +156,7 @@ export default function StaffLeadsPool() {
           <div className="relative flex-1 sm:w-72">
             <input
               type="text"
-              placeholder="Search by name or phone..."
+              placeholder="Search by name, phone, or Lead ID (L-...)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"

@@ -4,6 +4,7 @@ export interface User {
   id: string;
   name: string;
   displayId?: string;
+  employeeId?: string;
   initials: string;
   role: UserRole;
   designation: string;
@@ -17,6 +18,7 @@ export interface User {
   companyName?: string;
   reraId?: string;
   isActive: boolean;
+  createdAt?: string;
 }
 
 export type ProjectStatus = 'Upcoming' | 'Active' | 'Completed' | 'On Hold';
@@ -34,6 +36,7 @@ export interface Project {
   totalLandArea: number;
   landAreaUnit: string;
   surveyNumber: string;
+  dtcpNumber?: string;
   village: string;
   mandal: string;
   district: string;
@@ -53,6 +56,8 @@ export interface Project {
   owner?: SellerInfo;
   sellers?: SellerInfo[];
   availablePlots?: number;
+  /** Populated count of all Plot documents for this project */
+  inventoryPlotCount?: number;
 }
 
 export type PlotStatus = 'Available' | 'Booked' | 'Registered' | 'Canceled' | 'Pending';
@@ -161,6 +166,7 @@ export interface Lead {
   followUps?: FollowUp[];
   projectId?: string;
   plotId?: string;
+  plotIds?: string[];
   paymentStatus?: 'Advance Paid' | 'Advance Not Paid' | 'Fully Paid' | 'Partially Paid' | 'Not Paid';
   paymentMethod?: 'CASH' | 'LOAN';
   advanceAmount?: number;

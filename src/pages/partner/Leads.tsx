@@ -82,7 +82,7 @@ export default function PartnerLeads() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by name or phone..."
+            placeholder="Search by name, phone, or Lead ID (L-...)..."
             className="h-9 px-3 border border-slate-200 rounded-md text-sm outline-none focus:border-brand-green w-full sm:w-60 bg-white"
           />
 

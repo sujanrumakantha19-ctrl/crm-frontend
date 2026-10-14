@@ -16,7 +16,7 @@ export default function ForgotPassword() {
     setError('');
     
     try {
-      await authService.forgotPassword(email.trim());
+      await authService.forgotPassword(email.trim().toLowerCase());
       setSuccess(true);
     } catch (err) {
       setError('Failed to send reset link. Please try again.');
@@ -90,7 +90,7 @@ export default function ForgotPassword() {
                   <input
                     type="email"
                     value={email}
-                    onChange={e => setEmail(e.target.value)}
+                    onChange={e => setEmail(e.target.value.toLowerCase())}
                     placeholder="you@example.com"
                     className="w-full h-13 px-4 py-3.5 bg-slate-50/80 border border-slate-200/80 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-green/30 focus:border-brand-green focus:bg-white transition-all outline-none"
                     autoComplete="email"

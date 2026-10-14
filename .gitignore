@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+*.tar.gz
 
 # Editor directories and files
 .vscode/*
@@ -27,3 +28,10 @@ dist-ssr
 # Backend uploads
 backend/uploads/**
 !backend/uploads/.gitkeep
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+

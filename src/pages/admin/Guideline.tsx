@@ -46,6 +46,16 @@ const toNumber = (v: string): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const toNonNegativeNumber = (v: string): number => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+const toNonNegativeInteger = (v: string): number => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+};
+
 const formatINR = (n: number): string =>
   `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -55,9 +65,15 @@ const computeResults = (
   inputs: { squareFeet: string; price: string; sellers: string; buyers: string },
   bankDD = 0
 ): CalcResults => {
-  const totalValue = toNumber(inputs.squareFeet) * toNumber(inputs.price);
-  const chequeCount = toNumber(inputs.sellers) * toNumber(inputs.buyers);
-  const base = totalValue - bankDD;
+  const sqFt = toNonNegativeNumber(inputs.squareFeet);
+  const price = toNonNegativeNumber(inputs.price);
+  const sellers = toNonNegativeInteger(inputs.sellers);
+  const buyers = toNonNegativeInteger(inputs.buyers);
+  const validBankDD = Math.max(0, bankDD);
+
+  const totalValue = sqFt * price;
+  const chequeCount = (sellers > 0 && buyers > 0) ? sellers * buyers : 0;
+  const base = Math.max(0, totalValue - validBankDD);
   const eachCheque = chequeCount > 0 && base > 0 ? base / chequeCount : null;
   return { totalValue, chequeCount, eachCheque };
 };
@@ -73,6 +89,8 @@ function Field({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const isCountField = label.includes('No.');
+
   return (
     <label className="block">
       <span className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</span>
@@ -85,9 +103,14 @@ function Field({
         <Input
           type="number"
           min={0}
-          step="any"
+          step={isCountField ? 1 : 'any'}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw.includes('-')) return;
+            if (isCountField && raw.includes('.')) return;
+            onChange(raw);
+          }}
           placeholder="0"
           className={prefix ? 'pl-7' : ''}
         />

@@ -12,8 +12,9 @@ import { useAuth } from '@/context/AuthContext';
 import type { LeadStatus, Lead, Project, Plot, User } from '@/types';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
 import { NameTag } from '@/components/shared/NameTag';
-import { getYesterdayStr, formatSource } from '@/lib/utils';
+import { getMaxDobStr, formatSource } from '@/lib/utils';
 import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
+import { resolveLeadRep } from './Leads';
 
 export default function AdminLeadDetail() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +27,7 @@ export default function AdminLeadDetail() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [allPlots, setAllPlots] = useState<Record<string, Plot[]>>({});
   const [staffUsers, setStaffUsers] = useState<User[]>([]);
+  const activeStaffUsers = useMemo(() => staffUsers.filter(s => s.isActive !== false), [staffUsers]);
   const [channelPartners, setChannelPartners] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [whatsAppOpen, setWhatsAppOpen] = useState(false);
@@ -256,10 +258,11 @@ export default function AdminLeadDetail() {
 
     if (dob) {
       const selectedDate = new Date(dob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        toast.error('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        toast.error('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
@@ -289,15 +292,16 @@ export default function AdminLeadDetail() {
       ...leadState,
       customerName: name,
       phone,
-      email,
+      email: email.trim().toLowerCase() || undefined,
       city,
       gender,
       dob,
       notes,
       sourceType: sourceType as any,
       source: finalSource,
-      assignedTo: assignedTo || undefined,
-      assignedToName: staff ? staff.name : undefined,
+      assignedTo: assignedTo ? assignedTo : null,
+      assignedToName: staff ? staff.name : null,
+      assignedToDisplayId: staff ? (staff.displayId || null) : null,
       propertyInterest,
       budget: budget.trim() || undefined,
       category: category || undefined,
@@ -439,8 +443,8 @@ export default function AdminLeadDetail() {
         status: newStatus,
         ...(newStatus === 'Open' ? { assignedTo: undefined, assignedToName: undefined, assignedToDisplayId: undefined } : {})
       };
-      await leadService.update(leadIdStr, payload);
-      setLeadState(updated);
+      const res = await leadService.update(leadIdStr, payload);
+      setLeadState(res?.data || updated);
       toast.success(newStatus === 'Open' ? 'Lead moved back to Open (unassigned)' : `Lead marked as ${newStatus}`);
       
       if (newStatus === 'Open') {
@@ -565,7 +569,13 @@ export default function AdminLeadDetail() {
             </div>
             <div className="bg-slate-50 rounded-lg border border-slate-100 p-3">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Assigned Representative</span>
-              <p className="text-sm font-bold text-slate-800 mt-1">{leadState.assignedToDisplayId || leadState.assignedToName || (leadState.assignedTo && typeof leadState.assignedTo === 'object' ? (leadState.assignedTo as any).name : null) || 'Unassigned'}</p>
+              <p className="text-sm font-bold text-slate-800 mt-1">
+                {(() => {
+                  const rep = resolveLeadRep(leadState, staffUsers);
+                  if (!rep) return 'Unassigned';
+                  return rep.name && rep.displayId ? `${rep.name} (${rep.displayId})` : (rep.name || rep.displayId);
+                })()}
+              </p>
             </div>
           </div>
         </div>
@@ -580,7 +590,11 @@ export default function AdminLeadDetail() {
                 ['Project', project ? `${project.name} [${project.displayId}]` : 'General', MapPin],
                 ['Category', leadState.category || 'Not specified', Tag],
                 ['Budget', leadState.budget ? String(leadState.budget) : (leadState.budgetMin || leadState.budgetMax ? `₹${leadState.budgetMin || 0} - ₹${leadState.budgetMax || 0}` : 'Not specified'), Tag],
-                ['Representative', leadState.assignedToDisplayId || leadState.assignedToName || (leadState.assignedTo && typeof leadState.assignedTo === 'object' ? (leadState.assignedTo as any).name : null) || 'Unassigned', UserRound],
+                ['Representative', (() => {
+                  const rep = resolveLeadRep(leadState, staffUsers);
+                  if (!rep) return 'Unassigned';
+                  return rep.name && rep.displayId ? `${rep.name} (${rep.displayId})` : (rep.name || rep.displayId);
+                })(), UserRound],
                 ['Gender', leadState.gender || 'Male', UserRound],
                 ['Date of Birth', leadState.dob || 'Not specified', Calendar],
                 ['Source Name', leadState.source || 'Direct Intake', UserRound]
@@ -856,7 +870,7 @@ export default function AdminLeadDetail() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Email Address</label>
-                <input type="email" value={email} onChange={e => setEmail(e.target.value)} className={inputClass} />
+                <input type="email" value={email} onChange={e => setEmail(e.target.value.toLowerCase())} className={inputClass} />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">City</label>
@@ -882,12 +896,12 @@ export default function AdminLeadDetail() {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Date of Birth</label>
                 <input 
                   type="date" 
-                  max={getYesterdayStr()} 
+                  max={getMaxDobStr()} 
                   value={dob} 
                   onChange={e => {
                     const val = e.target.value;
-                    if (val && val > getYesterdayStr()) {
-                      toast.error('Date of Birth cannot be today or a future date.');
+                    if (val && val > getMaxDobStr()) {
+                      toast.error('Date of Birth indicates age must be at least 18 years.');
                       setDob('');
                     } else {
                       setDob(val);
@@ -944,7 +958,7 @@ export default function AdminLeadDetail() {
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Representative Staff</label>
                   <select value={assignedTo} onChange={e => setAssignedTo(e.target.value)} className={selectClass}>
                     <option value="">Unassigned</option>
-                    {staffUsers.map(s => (
+                    {activeStaffUsers.map(s => (
                       <option key={s.id} value={s.id}>{s.name} ({s.designation})</option>
                     ))}
                   </select>
@@ -957,7 +971,7 @@ export default function AdminLeadDetail() {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Select Staff Member (Source) <span className="text-red-500">*</span></label>
                 <select value={source} onChange={e => setSource(e.target.value)} className={selectClass}>
                   <option value="">Choose Staff Member...</option>
-                  {staffUsers.map(s => (
+                  {activeStaffUsers.map(s => (
                     <option key={s.id} value={s.name}>{s.name} ({s.designation})</option>
                   ))}
                 </select>

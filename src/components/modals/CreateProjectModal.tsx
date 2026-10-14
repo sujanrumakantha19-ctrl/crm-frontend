@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { Upload, X, Map, Plus, Trash2 } from 'lucide-react';
+import { Upload, X, Map as MapIcon, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '@/components/shared/Modal';
 import { getFileUrl } from '@/lib/api';
 import { toast } from 'sonner';
@@ -43,6 +43,7 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
   const [landAreaUnit, setLandAreaUnit] = useState('Acres');
   const [totalPlots, setTotalPlots] = useState('');
   const [surveyNumber, setSurveyNumber] = useState('');
+  const [dtcpNumber, setDtcpNumber] = useState('');
   const [landType, setLandType] = useState('Residential');
   
   const [images, setImages] = useState<string[]>([]);
@@ -106,16 +107,16 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
           const data = await res.json();
           if (data && data.address) {
             const a = data.address;
-            const newVillage = a.village || a.suburb || a.town || a.neighbourhood || '';
-            const newMandal = a.county || a.state_district || '';
-            const newDistrict = a.state_district || a.city || '';
+            const newVillage = a.village || a.suburb || a.hamlet || a.neighbourhood || '';
+            const newMandal = a.county || a.municipality || '';
+            const newDistrict = a.state_district || a.city_district || a.county || '';
             
-            if (newVillage) setVillage(newVillage);
-            if (newMandal) setMandal(newMandal.replace(' District', '').replace(' Mandal', ''));
-            if (newDistrict) setDistrict(newDistrict.replace(' District', ''));
+            setVillage((prev) => prev.trim() ? prev : newVillage);
+            setMandal((prev) => prev.trim() ? prev : newMandal.replace(' District', '').replace(' Mandal', ''));
+            setDistrict((prev) => prev.trim() ? prev : newDistrict.replace(' District', ''));
             
-            const newLocation = newVillage ? `${newVillage}, ${newDistrict || newMandal}`.replace(' District', '') : '';
-            if (newLocation && !location) setLocation(newLocation);
+            const newLocation = a.city || a.town || a.state || newVillage || '';
+            setLocation((prev) => (prev.trim() ? prev : newLocation));
           }
         } catch (err) {
           console.error('Reverse geocoding failed', err);
@@ -128,12 +129,29 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
   }, [latitude, longitude]);
 
   const handleSave = () => {
-    if (!name.trim()) { toast.error('Project Name is required.'); return; }
-    if (!latitude.trim()) { toast.error('Latitude is required.'); return; }
-    if (!longitude.trim()) { toast.error('Longitude is required.'); return; }
+    const trimmedName = name.trim();
+    if (!trimmedName) { toast.error('Project Name is required.'); return; }
+    if (!/[a-zA-Z]/.test(trimmedName)) { toast.error('Project Name must contain alphabetic characters and cannot be numeric only.'); return; }
+
+    if (village.trim() && !/[a-zA-Z]/.test(village.trim())) { toast.error('Village must contain alphabetic characters and cannot be numeric only.'); return; }
+    if (mandal.trim() && !/[a-zA-Z]/.test(mandal.trim())) { toast.error('Mandal must contain alphabetic characters and cannot be numeric only.'); return; }
+    if (district.trim() && !/[a-zA-Z]/.test(district.trim())) { toast.error('District must contain alphabetic characters and cannot be numeric only.'); return; }
+
+    const latNum = Number(latitude.trim());
+    const lngNum = Number(longitude.trim());
+    if (!latitude.trim() || isNaN(latNum) || latNum < -90 || latNum > 90) {
+      toast.error('Latitude must be a valid number between -90 and 90.');
+      return;
+    }
+    if (!longitude.trim() || isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+      toast.error('Longitude must be a valid number between -180 and 180.');
+      return;
+    }
+
     if (!location.trim()) { toast.error('Project Location is required.'); return; }
     if (!totalLandArea.trim() || Number(totalLandArea) <= 0) { toast.error('Total Land Area is required and must be greater than 0.'); return; }
     if (!totalPlots.trim() || Number(totalPlots) <= 0) { toast.error('Total Number of Plots is required and must be greater than 0.'); return; }
+    if (Number(totalPlots) > 5000) { toast.error('Total Number of Plots cannot exceed 5,000.'); return; }
     if (!surveyNumber.trim()) { toast.error('Survey Number is required.'); return; }
     if (uploading) { toast.error('Please wait for uploads to complete.'); return; }
 
@@ -162,9 +180,10 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
       totalLandArea: Number(totalLandArea) || 0,
       landAreaUnit,
       surveyNumber,
-      village: village || 'Gachibowli',
-      mandal: mandal || 'Serilingampally',
-      district: district || 'Ranga Reddy',
+      dtcpNumber: dtcpNumber.trim() || undefined,
+      village: village.trim() || undefined,
+      mandal: mandal.trim() || undefined,
+      district: district.trim() || undefined,
       landType,
       totalPlots: Number(totalPlots) || 0,
       plotSize: 200,
@@ -180,7 +199,7 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
       owner: primarySeller ? {
         name: primarySeller.name,
         phone: primarySeller.phone,
-        email: primarySeller.email || undefined,
+        email: primarySeller.email ? primarySeller.email.trim().toLowerCase() : undefined,
         address: primarySeller.address || undefined,
         kycDocuments: primarySeller.docs.map((d, i) => ({
           id: `doc-${Date.now()}-${i}`,
@@ -192,7 +211,7 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
       sellers: validSellers.map((s, idx) => ({
         name: s.name,
         phone: s.phone,
-        email: s.email || undefined,
+        email: s.email ? s.email.trim().toLowerCase() : undefined,
         address: s.address || undefined,
         kycDocuments: s.docs.map((d, i) => ({
           id: `doc-${Date.now()}-${idx}-${i}`,
@@ -244,7 +263,7 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-brand-blue disabled:opacity-40 disabled:hover:text-slate-400 transition-colors"
                     title={latitude && longitude ? "View on Map" : "Enter latitude & longitude to view map"}
                   >
-                    <Map size={16} />
+                    <MapIcon size={16} />
                   </button>
                 </div>
               </div>
@@ -293,13 +312,48 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
                 </div>
               </Field>
               <Field label="Total Number of Plots" required>
-                <input type="number" placeholder="e.g. 50" value={totalPlots} onChange={e => setTotalPlots(e.target.value)} className={inputClass} />
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  placeholder="e.g. 50"
+                  value={totalPlots}
+                  onKeyDown={e => {
+                    if (e.key === 'e' || e.key === 'E' || e.key === '+' || e.key === '-' || e.key === '.') {
+                      e.preventDefault();
+                    }
+                  }}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val === '') {
+                      setTotalPlots('');
+                      return;
+                    }
+                    const num = Number(val);
+                    if (num > 5000) {
+                      toast.error('Total Number of Plots cannot exceed 5,000.');
+                      e.target.value = totalPlots;
+                      return;
+                    }
+                    if (num < 0) {
+                      e.target.value = totalPlots;
+                      return;
+                    }
+                    setTotalPlots(val);
+                  }}
+                  className={inputClass}
+                />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <Field label="Survey Number" required>
                 <input type="text" placeholder="Enter survey number" value={surveyNumber} onChange={e => setSurveyNumber(e.target.value)} className={inputClass} />
               </Field>
+              <Field label="DTCP Number">
+                <input type="text" placeholder="Enter DTCP number (optional)" value={dtcpNumber} onChange={e => setDtcpNumber(e.target.value)} className={inputClass} />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
               <Field label="Village">
                 <input type="text" placeholder="Enter village" value={village} onChange={e => setVillage(e.target.value)} className={inputClass} />
               </Field>
@@ -359,7 +413,7 @@ export function CreateProjectModal({ open, onClose, onSave }: CreateProjectModal
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label={`Seller Email`}>
-                  <input type="email" placeholder="Enter seller email" value={seller.email} onChange={e => updateSeller(idx, 'email', e.target.value)} className={inputClass} />
+                  <input type="email" placeholder="Enter seller email" value={seller.email} onChange={e => updateSeller(idx, 'email', e.target.value.toLowerCase())} className={inputClass} />
                 </Field>
                 <Field label={`Seller Address`}>
                   <input type="text" placeholder="Enter seller address" value={seller.address} onChange={e => updateSeller(idx, 'address', e.target.value)} className={inputClass} />

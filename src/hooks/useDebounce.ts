@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 
 /**
- * Debounces a value by the specified delay (default 1000ms / 1 second).
+ * Debounces a value by the specified delay (default 500ms).
  * Returns the debounced value that only updates after the delay.
  */
-export function useDebounce<T>(value: T, delay: number = 1000): T {
+export function useDebounce<T>(value: T, delay: number = 500): T {
   const [debouncedValue, setDebouncedValue] = useState<T>(value)
 
   useEffect(() => {

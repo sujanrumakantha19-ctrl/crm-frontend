@@ -11,6 +11,7 @@ import { SearchDropdown } from '@/components/shared/SearchDropdown';
 import { useExportContext } from '@/context/ExportContext';
 import { useAuth } from '@/context/AuthContext';
 import { getAvatarColor, getInitials } from '@/data/mockData';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { leadService, userService } from '@/services';
 import type { User } from '@/types';
 
@@ -28,7 +29,7 @@ export default function AdminFollowUps() {
   const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'positive' | 'negative'>('all');
 
   const [search, setSearch] = useState('');
-  const debouncedSearch = useDebounce(search, 1000);
+  const debouncedSearch = useDebounce(search, 500);
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -195,8 +196,8 @@ export default function AdminFollowUps() {
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search lead or phone..."
-              className="h-9 w-full sm:w-56 pl-8 pr-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none"
+              placeholder="Search by ID, name, phone, or staff..."
+              className="h-9 w-full sm:w-64 pl-8 pr-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none"
             />
           </div>
           
@@ -549,31 +550,14 @@ export default function AdminFollowUps() {
       )}
 
       {/* Backend-driven Pagination Controls */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-2">
-          <p className="text-xs text-slate-500 font-medium">
-            Page <span className="font-semibold text-slate-900">{page}</span> of <span className="font-semibold text-slate-900">{totalPages}</span>
-            <span className="text-slate-400 ml-2">({total} total follow-ups)</span>
-          </p>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
+      <PaginationControls
+        currentPage={page}
+        totalPages={totalPages}
+        onPageChange={setPage}
+        totalCount={total}
+        perPage={PER_PAGE}
+        itemName="follow-ups"
+      />
     </div>
   );
 }

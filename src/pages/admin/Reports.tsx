@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Download, ChevronLeft, ChevronRight, Building2, Users, Home, TrendingUp, Filter, RotateCcw } from 'lucide-react';
 import { useExportContext } from '@/context/ExportContext';
 import { reportService } from '@/services';
+import type { OperationsMetricsData } from '@/services/report';
+import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
 import { Avatar } from '@/components/shared/Avatar';
@@ -42,9 +45,10 @@ const initialFilters: FilterState = {
   dateTo: '',
 };
 
-type TabType = 'projects' | 'staff' | 'attendance' | 'channel-partner-performance' | 'leads-trend' | 'lead-contribution';
+type TabType = 'projects' | 'staff' | 'attendance' | 'channel-partner-performance' | 'leads-trend' | 'lead-contribution' | 'operations';
 
 export default function AdminReports() {
+  const navigate = useNavigate();
   const { setExportInfo, triggerDownload } = useExportContext();
   const { role } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('projects');
@@ -60,6 +64,7 @@ export default function AdminReports() {
     'channel-partner-performance': { ...initialFilters },
     'leads-trend': { ...initialFilters },
     'lead-contribution': { ...initialFilters },
+    operations: { ...initialFilters },
   });
 
   const currentFilter = filters[activeTab];
@@ -67,6 +72,8 @@ export default function AdminReports() {
   // Summary cards
   const [summary, setSummary] = useState<any>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
+  const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
+  const [opsLoading, setOpsLoading] = useState(false);
 
   // Tab data (only current page)
   const [tabData, setTabData] = useState<any[]>([]);
@@ -87,6 +94,23 @@ export default function AdminReports() {
       /* ignore */
     } finally {
       setSummaryLoading(false);
+    }
+  }, []);
+
+  const fetchOperationsMetrics = useCallback(async (f: FilterState) => {
+    setOpsLoading(true);
+    try {
+      const res: any = await reportService.getOperationsMetrics({
+        month: f.month || undefined,
+        year: f.year || undefined,
+        dateFrom: f.dateFrom || undefined,
+        dateTo: f.dateTo || undefined,
+      });
+      setOpsMetrics(res.data || res);
+    } catch {
+      setOpsMetrics(null);
+    } finally {
+      setOpsLoading(false);
     }
   }, []);
 
@@ -124,9 +148,13 @@ export default function AdminReports() {
   }, []);
 
   useEffect(() => {
+    if (activeTab === 'operations') {
+      fetchOperationsMetrics(currentFilter);
+      return;
+    }
     fetchSummary(currentFilter);
     fetchTabData(activeTab, page, currentFilter);
-  }, [activeTab, page, currentFilter, fetchSummary, fetchTabData]);
+  }, [activeTab, page, currentFilter, fetchSummary, fetchTabData, fetchOperationsMetrics]);
 
   useEffect(() => {
     const f = filters[activeTab];
@@ -291,6 +319,8 @@ export default function AdminReports() {
         return 'Leads & Booking Trend';
       case 'lead-contribution':
         return 'Lead Contribution';
+      case 'operations':
+        return 'Bookings & Loans';
     }
   };
 
@@ -306,6 +336,7 @@ export default function AdminReports() {
       </div>
 
       {/* Summary Cards */}
+      {activeTab !== 'operations' && (
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         {[
           { icon: <Building2 size={20} className="text-brand-blue" />, bg: 'bg-blue-50', value: s.totalProjects ?? '—', label: 'Projects' },
@@ -330,8 +361,10 @@ export default function AdminReports() {
           </div>
         ))}
       </div>
+      )}
 
       {/* Conversion Funnel */}
+      {activeTab !== 'operations' && (
       <div className="bg-white rounded-lg border border-slate-200 p-4">
         <h3 className="text-sm font-bold text-slate-700 mb-3">Lead Conversion Funnel</h3>
         <div className="flex items-center gap-4">
@@ -351,6 +384,7 @@ export default function AdminReports() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4 overflow-x-auto">
@@ -362,6 +396,7 @@ export default function AdminReports() {
             { key: 'channel-partner-performance' as const, label: 'Channel Partner Performance' },
             { key: 'leads-trend' as const, label: 'Leads & Booking Trend' },
             { key: 'lead-contribution' as const, label: 'Lead Contribution' },
+            { key: 'operations' as const, label: 'Bookings & Loans' },
           ].map(tab => (
             <button
               key={tab.key}
@@ -454,8 +489,17 @@ export default function AdminReports() {
         </div>
       </div>
 
+      {activeTab === 'operations' && (
+        <OperationsMetricsCards
+          metrics={opsMetrics}
+          loading={opsLoading}
+          role={role}
+          onNavigate={navigate}
+        />
+      )}
+
       {/* Table */}
-      {tabLoading ? (
+      {activeTab !== 'operations' && (tabLoading ? (
         <div className="flex items-center justify-center h-40">
           <div className="w-7 h-7 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
         </div>
@@ -860,10 +904,10 @@ export default function AdminReports() {
             {tabData.length === 0 && <div className="text-center py-8 text-sm text-slate-400">No data available for the selected filters</div>}
           </div>
         </>
-      )}
+      ))}
 
       {/* Backend-driven Pagination */}
-      {totalPages > 1 && (
+      {activeTab !== 'operations' && totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
           <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50">
             <ChevronLeft size={16} />

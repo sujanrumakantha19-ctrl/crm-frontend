@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { CheckCircle, User, Phone, Mail, MapPin, Home, Building2, FileText, Send, RotateCcw, AlertTriangle, X, Calendar } from 'lucide-react';
 import { toast } from 'sonner';
+import { LEAD_PROJECT_LIST_PARAMS, getProjectId, isProjectSelectableForNewLead } from '@/lib/leadProjectOptions';
 import { projectService, leadService } from '@/services';
 import type { CheckPhoneLead } from '@/services/leads';
 import { useAuth } from '@/context/AuthContext';
@@ -72,7 +73,7 @@ export default function PartnerAddLead() {
   }, [defaultProjectId]);
 
   useEffect(() => {
-    projectService.getAll({ limit: 100 }).then(r => setProjects(r.data || [])).catch(() => {});
+    projectService.getAll({ ...LEAD_PROJECT_LIST_PARAMS }).then(r => setProjects(r.data || [])).catch(() => {});
   }, []);
 
   const resetForm = () => {
@@ -96,7 +97,11 @@ export default function PartnerAddLead() {
       toast.error('Please enter a valid 10-digit phone number.');
       return;
     }
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!email.trim()) {
+      toast.error('Email is required.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       toast.error('Please enter a valid email address.');
       return;
     }
@@ -106,7 +111,7 @@ export default function PartnerAddLead() {
       await leadService.create({
         customerName: name.trim(),
         phone: phone.trim(),
-        email: email.trim() || undefined,
+        email: email.trim().toLowerCase() || undefined,
         gender: gender || 'Not Specified',
         dob: dob || undefined,
         city: city.trim() || undefined,
@@ -242,14 +247,14 @@ export default function PartnerAddLead() {
             </div>
 
             <div>
-              <label className={labelClass}>Email Address</label>
+              <label className={labelClass}>Email Address <span className="text-red-500 font-bold">*</span></label>
               <div className="relative">
                 <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input 
                   type="email" 
                   placeholder="Enter email address" 
                   value={email} 
-                  onChange={e => setEmail(e.target.value)} 
+                  onChange={e => setEmail(e.target.value.toLowerCase())} 
                   className={inputClass} 
                 />
               </div>
@@ -308,8 +313,8 @@ export default function PartnerAddLead() {
                 <Home size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                 <select value={projectId} onChange={e => setProjectId(e.target.value)} className={selectClass}>
                   <option value="">Select a project</option>
-                  {projects.filter(p => p.isEnabled !== false && ((p.id || (p as any)._id) === projectId || !p.status || p.status.toLowerCase() === 'active' || p.status.toLowerCase() === 'upcoming')).map(p => (
-                    <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>{p.name} — {p.location}</option>
+                  {projects.filter(p => isProjectSelectableForNewLead(p, projectId, { requireEnabled: true })).map(p => (
+                    <option key={getProjectId(p)} value={getProjectId(p)}>{p.name} — {p.location}</option>
                   ))}
                 </select>
               </div>

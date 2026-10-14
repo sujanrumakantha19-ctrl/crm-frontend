@@ -38,7 +38,7 @@ export default function Register() {
         initials: name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'CP',
         role: 'partner',
         designation: 'Channel Partner',
-        email: email.trim(),
+        email: email.trim().toLowerCase(),
         phone: phone.trim(),
         password,
       });
@@ -126,7 +126,7 @@ export default function Register() {
                 <input
                   type="email"
                   value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  onChange={e => setEmail(e.target.value.toLowerCase())}
                   placeholder="you@example.com"
                   className={inputClass}
                   autoComplete="email"

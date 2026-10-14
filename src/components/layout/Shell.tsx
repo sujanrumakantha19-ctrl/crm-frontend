@@ -43,9 +43,19 @@ export function Shell({ role }: ShellProps) {
       else if (window.innerWidth < 1280) setSidebarCollapsed(true);
       else setSidebarCollapsed(false);
     };
+    const handleCloseSidebar = () => setSidebarOpen(false);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false);
+    };
     window.addEventListener('resize', handleResize);
+    window.addEventListener('app:close-sidebar', handleCloseSidebar);
+    window.addEventListener('keydown', handleKeyDown);
     handleResize();
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('app:close-sidebar', handleCloseSidebar);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="w-8 h-8 border-2 border-brand-green border-t-transparent rounded-full animate-spin" /></div>;
@@ -66,6 +76,7 @@ export function Shell({ role }: ShellProps) {
 
       {/* Mobile Drawer — always mounted, animated via translate + opacity */}
       <div
+        data-drawer-open={sidebarOpen}
         className={`md:hidden fixed inset-0 z-50 transition-all duration-300 ease-in-out ${
           sidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'
         }`}
@@ -83,7 +94,7 @@ export function Shell({ role }: ShellProps) {
             sidebarOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
-          <Sidebar role={role} collapsed={false} onToggleCollapse={() => {}} onNavigate={() => setSidebarOpen(false)} />
+          <Sidebar role={role} collapsed={false} onToggleCollapse={() => setSidebarOpen(false)} onNavigate={() => setSidebarOpen(false)} />
         </div>
       </div>
 

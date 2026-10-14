@@ -3,6 +3,7 @@ import { AuthProvider } from '@/context/AuthContext';
 import { NotificationProvider } from '@/context/NotificationContext';
 import { ExportProvider } from '@/context/ExportContext';
 import { Toaster } from '@/components/ui/sonner';
+import { BackButtonHandler } from '@/components/BackButtonHandler';
 import { Shell } from '@/components/layout/Shell';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
@@ -53,6 +54,7 @@ export default function App() {
     <AuthProvider>
       <NotificationProvider>
         <ExportProvider>
+        <BackButtonHandler />
         <Routes>
           {/* Login, Register & Password Reset */}
           <Route path="/login" element={<Login />} />

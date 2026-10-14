@@ -1,8 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-empty */
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { useParams, Link, useLocation } from 'react-router-dom';
-import { createPortal } from 'react-dom';
-import { Search, Pencil, MapPin, LayoutGrid, CheckCircle, Circle, XCircle, ChevronLeft, ChevronRight, X, Map, Clock3, Upload, FileText, Send, MessageSquare, Ban, Download, Plus, Building2, ImageOff, ExternalLink, Trash2, FolderPlus, AlertTriangle, AlertCircle, Share2 } from 'lucide-react';
+import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
+import { Search, Pencil, MapPin, LayoutGrid, CheckCircle, Circle, XCircle, ChevronLeft, ChevronRight, X, Map as MapIcon, Clock3, Upload, FileText, Send, MessageSquare, Ban, Download, Plus, Building2, ImageOff, ExternalLink, Trash2, FolderPlus, AlertTriangle, AlertCircle, Share2 } from 'lucide-react';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
 import { Drawer } from '@/components/shared/Drawer';
@@ -11,6 +10,7 @@ import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
 import { EditProjectModal } from '@/components/modals/EditProjectModal';
 import { ShareLocationModal } from '@/components/modals/ShareLocationModal';
 import { Modal } from '@/components/shared/Modal';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { projectService, plotService, leadService, userService, taskService } from '@/services';
 import { whatsappService } from '@/services/whatsapp';
@@ -21,6 +21,7 @@ import { useExportContext } from '@/context/ExportContext';
 import { logActivity } from '@/lib/activityLogger';
 import { toast } from 'sonner';
 import type { Plot, Lead, User, Project, SellerInfo } from '@/types';
+import { getProjectDisplayPlotTotal } from '@/lib/projectPlotCounts';
 
 const plotStatusStyles: Record<string, { bg: string; textCol: string }> = {
   Available: { bg: 'bg-white border-2 border-slate-200', textCol: 'text-slate-700' },
@@ -73,12 +74,40 @@ const getCleanDocName = (rawName?: string, rawPath?: string) => {
 export default function AdminProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
+  const navigate = useNavigate();
   const { role, user: authUser } = useAuth();
   const { setExportInfo, triggerDownload } = useExportContext();
   const isAdmin = role === 'admin';
   const isPartner = role === 'partner';
   const [project, setProject] = useState<Project | undefined>(undefined);
   const [plots, setPlots] = useState<Plot[]>([]);
+  const [projectPlotStats, setProjectPlotStats] = useState({
+    Available: 0,
+    Booked: 0,
+    Registered: 0,
+    Cancelled: 0,
+    Pending: 0,
+    total: 0,
+  });
+  const [allocatedSqFt, setAllocatedSqFt] = useState(0);
+
+  const [gridPlots, setGridPlots] = useState<Plot[]>([]);
+  const [gridPlotPage, setGridPlotPage] = useState(1);
+  const [gridTotalPlots, setGridTotalPlots] = useState(0);
+  const [gridTotalPages, setGridTotalPages] = useState(1);
+  const [gridLoading, setGridLoading] = useState(false);
+
+  const [bulkPlots, setBulkPlots] = useState<Plot[]>([]);
+  const [bulkPlotPage, setBulkPlotPage] = useState(1);
+  const [bulkTotalPlots, setBulkTotalPlots] = useState(0);
+  const [bulkTotalPages, setBulkTotalPages] = useState(1);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkSearch, setBulkSearch] = useState('');
+  const [bulkPendingOnly, setBulkPendingOnly] = useState(false);
+
+  const [pendingApprovalPlots, setPendingApprovalPlots] = useState<Plot[]>([]);
+  const [pendingApprovalLoading, setPendingApprovalLoading] = useState(false);
+
   const [projectLeads, setProjectLeads] = useState<Lead[]>([]);
   const [staffUsers, setStaffUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,12 +115,88 @@ export default function AdminProjectDetail() {
   const [dirtyPlotIds, setDirtyPlotIds] = useState<Set<string>>(new Set());
   const [shareLocationOpen, setShareLocationOpen] = useState(false);
 
+  const fetchGridPlots = useCallback(async (pageToFetch: number) => {
+    if (!id) return;
+    setGridLoading(true);
+    try {
+      const res = await plotService.getByProject(id, { page: pageToFetch, limit: 50 });
+      const list = res.data || [];
+      setGridPlots(list);
+      setPlots(list);
+      if (res.pagination) {
+        setGridTotalPages(res.pagination.pages || 1);
+        setGridTotalPlots(res.pagination.total || list.length);
+      } else if (res.total !== undefined) {
+        setGridTotalPlots(res.total);
+        setGridTotalPages(Math.ceil(res.total / 50) || 1);
+      }
+      if (res.stats) {
+        setProjectPlotStats({
+          Available: res.stats.Available || 0,
+          Booked: res.stats.Booked || 0,
+          Registered: res.stats.Registered || 0,
+          Cancelled: (res.stats.Cancelled || 0) + (res.stats.Canceled || 0),
+          Pending: res.stats.Pending || 0,
+          total: res.stats.total || 0,
+        });
+      }
+      if (res.allocatedSqFt !== undefined) {
+        setAllocatedSqFt(res.allocatedSqFt);
+      }
+    } catch (err) {
+      console.error('Failed to fetch grid plots', err);
+    } finally {
+      setGridLoading(false);
+    }
+  }, [id]);
+
+  const fetchBulkPlots = useCallback(async (pageToFetch: number, search?: string, pendingOnly?: boolean) => {
+    if (!id) return;
+    setBulkLoading(true);
+    try {
+      const s = search !== undefined ? search : bulkSearch;
+      const p = pendingOnly !== undefined ? pendingOnly : bulkPendingOnly;
+      const res = await plotService.getByProject(id, {
+        page: pageToFetch,
+        limit: 50,
+        search: s.trim() || undefined,
+        status: p ? 'Pending' : undefined,
+      });
+      const list = res.data || [];
+      setBulkPlots(list);
+      if (res.pagination) {
+        setBulkTotalPages(res.pagination.pages || 1);
+        setBulkTotalPlots(res.pagination.total || list.length);
+      } else if (res.total !== undefined) {
+        setBulkTotalPlots(res.total);
+        setBulkTotalPages(Math.ceil(res.total / 50) || 1);
+      }
+      if (res.stats) {
+        setProjectPlotStats({
+          Available: res.stats.Available || 0,
+          Booked: res.stats.Booked || 0,
+          Registered: res.stats.Registered || 0,
+          Cancelled: (res.stats.Cancelled || 0) + (res.stats.Canceled || 0),
+          Pending: res.stats.Pending || 0,
+          total: res.stats.total || 0,
+        });
+      }
+      if (res.allocatedSqFt !== undefined) {
+        setAllocatedSqFt(res.allocatedSqFt);
+      }
+    } catch (err) {
+      console.error('Failed to fetch bulk plots', err);
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [id, bulkSearch, bulkPendingOnly]);
+
   useEffect(() => {
     if (!id) { setLoading(false); return; }
     (async () => {
       const [pRes, plRes, lRes, sRes] = await Promise.allSettled([
         projectService.getById(id),
-        plotService.getByProject(id),
+        plotService.getByProject(id, { page: 1, limit: 50 }),
         leadService.getAll({ projectId: id, limit: 100 }),
         userService.getAll({ role: 'staff', limit: 100 }),
       ]);
@@ -101,13 +206,37 @@ export default function AdminProjectDetail() {
         if (p && !p.plotImages) p.plotImages = [];
         setProject(p);
       }
-      if (plRes.status === 'fulfilled') setPlots(plRes.value.data || []);
+      if (plRes.status === 'fulfilled') {
+        const res = plRes.value;
+        const list = res.data || [];
+        setGridPlots(list);
+        setPlots(list);
+        if (res.pagination) {
+          setGridTotalPages(res.pagination.pages || 1);
+          setGridTotalPlots(res.pagination.total || list.length);
+        } else if (res.total !== undefined) {
+          setGridTotalPlots(res.total);
+          setGridTotalPages(Math.ceil(res.total / 50) || 1);
+        }
+        if (res.stats) {
+          setProjectPlotStats({
+            Available: res.stats.Available || 0,
+            Booked: res.stats.Booked || 0,
+            Registered: res.stats.Registered || 0,
+            Cancelled: (res.stats.Cancelled || 0) + (res.stats.Canceled || 0),
+            Pending: res.stats.Pending || 0,
+            total: res.stats.total || 0,
+          });
+        }
+        if (res.allocatedSqFt !== undefined) {
+          setAllocatedSqFt(res.allocatedSqFt);
+        }
+      }
       if (lRes.status === 'fulfilled') setProjectLeads(lRes.value.data || []);
       if (sRes.status === 'fulfilled') setStaffUsers(sRes.value.data || []);
       setLoading(false);
     })();
   }, [id]);
-
 
   const recipients = useMemo(() => {
     return projectLeads.map(l => ({
@@ -115,6 +244,7 @@ export default function AdminProjectDetail() {
       name: l.customerName,
       phone: l.phone,
       status: l.status,
+      displayId: l.displayId,
     }));
   }, [projectLeads]);
 
@@ -137,27 +267,33 @@ export default function AdminProjectDetail() {
     }
   }, [isPartner, activeTab]);
 
-  // Select plot automatically based on search query parameter once plots load
+  // Select plot automatically based on search query parameter
   useEffect(() => {
-    if (isPartner) return;
-    if (plots.length > 0) {
-      const searchParams = new URLSearchParams(location.search);
-      const plotIdParam = searchParams.get('plotId');
-      const plotNumParam = searchParams.get('plotNumber');
+    if (isPartner || !id) return;
+    const searchParams = new URLSearchParams(location.search);
+    const plotIdParam = searchParams.get('plotId');
+    const plotNumParam = searchParams.get('plotNumber');
 
-      if (plotIdParam) {
-        const found = plots.find(p => p.id === plotIdParam || (p as any)._id === plotIdParam);
-        if (found) {
-          setSelectedPlot(found);
-        }
-      } else if (plotNumParam) {
-        const found = plots.find(p => String(p.plotNumber) === plotNumParam);
-        if (found) {
-          setSelectedPlot(found);
-        }
+    if (plotIdParam) {
+      const found = gridPlots.find(p => p.id === plotIdParam || (p as any)._id === plotIdParam);
+      if (found) {
+        setSelectedPlot(found);
+      } else {
+        plotService.getById(plotIdParam)
+          .then(res => { if (res.data) setSelectedPlot(res.data); })
+          .catch(() => {});
+      }
+    } else if (plotNumParam) {
+      const found = gridPlots.find(p => String(p.plotNumber) === plotNumParam);
+      if (found) {
+        setSelectedPlot(found);
+      } else {
+        plotService.getByProject(id, { search: plotNumParam, limit: 1 })
+          .then(res => { if (res.data && res.data[0]) setSelectedPlot(res.data[0]); })
+          .catch(() => {});
       }
     }
-  }, [plots, location.search, isPartner]);
+  }, [gridPlots, location.search, isPartner, id]);
 
   useEffect(() => {
     if (selectedPlot && selectedPlot.status === 'Pending' && !selectedPlot.pendingApproval) {
@@ -168,6 +304,8 @@ export default function AdminProjectDetail() {
             if (res.data) {
               const updated = { ...selectedPlot, pendingApproval: res.data };
               setSelectedPlot(updated);
+              setGridPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updated : p));
+              setBulkPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updated : p));
               setPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updated : p));
             }
           })
@@ -175,12 +313,61 @@ export default function AdminProjectDetail() {
       }
     }
   }, [selectedPlot]);
+
   const [isEditingPlot, setIsEditingPlot] = useState(false);
   const [editedPlot, setEditedPlot] = useState<Plot | null>(null);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
-  const [bulkSearch, setBulkSearch] = useState('');
-  const [bulkPendingOnly, setBulkPendingOnly] = useState(false);
   const [approvalsModalOpen, setApprovalsModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!bulkEditOpen) return;
+    const timer = setTimeout(() => {
+      setBulkPlotPage(1);
+      fetchBulkPlots(1, bulkSearch, bulkPendingOnly);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [bulkSearch, bulkPendingOnly, bulkEditOpen, fetchBulkPlots]);
+
+  useEffect(() => {
+    if (bulkEditOpen) {
+      setBulkPlotPage(1);
+      fetchBulkPlots(1, bulkSearch, bulkPendingOnly);
+    }
+  }, [bulkEditOpen, fetchBulkPlots]);
+
+  useEffect(() => {
+    if (approvalsModalOpen && id) {
+      setPendingApprovalLoading(true);
+      plotService.getByProject(id, { status: 'Pending', limit: 200 })
+        .then(res => setPendingApprovalPlots(res.data || []))
+        .catch(() => {})
+        .finally(() => setPendingApprovalLoading(false));
+    }
+  }, [approvalsModalOpen, id]);
+
+  // Precompute duplicate plot numbers in O(N) to eliminate O(N^2) browser freezing
+  const duplicatePlotNumbers = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of bulkPlots) {
+      const num = String(p.plotNumber || '').trim();
+      if (num) counts[num] = (counts[num] || 0) + 1;
+    }
+    const dups = new Set<string>();
+    for (const [num, count] of Object.entries(counts)) {
+      if (count > 1) dups.add(num);
+    }
+    return dups;
+  }, [bulkPlots]);
+
+  const toSqFtHelper = useCallback((v: number, u: string) => {
+    const uu = (u || '').toLowerCase().replace(/\s/g, '');
+    if (uu === 'sqyards' || uu === 'sqyard') return v * 9;
+    if (uu === 'acres' || uu === 'acre') return v * 43560;
+    if (uu === 'cents' || uu === 'cent') return v * 435.6;
+    return v;
+  }, []);
+
+  const totalAllocatedSqFt = allocatedSqFt;
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [editOpen, setEditOpen] = useState(false);
@@ -234,7 +421,7 @@ export default function AdminProjectDetail() {
         })
         .catch(() => { })
         .finally(() => setIsSearchingLeads(false));
-    }, 400);
+    }, 500);
     return () => clearTimeout(timer);
   }, [bookingCustomerSearch, role, authUser?.id]);
 
@@ -291,6 +478,8 @@ export default function AdminProjectDetail() {
         try {
           await plotService.delete(plotId);
           setPlots(prev => prev.filter(p => (p.id || (p as any)._id) !== plotId));
+          setGridPlots(prev => prev.filter(p => (p.id || (p as any)._id) !== plotId));
+          setBulkPlots(prev => prev.filter(p => (p.id || (p as any)._id) !== plotId));
           const { toast } = await import('sonner');
           toast.success(`Plot #${plotToDelete.plotNumber} deleted successfully!`);
         } catch (err: any) {
@@ -325,6 +514,8 @@ export default function AdminProjectDetail() {
       if (created) {
         created.id = created.id || created._id;
         setPlots(prev => [...prev, created]);
+        setGridPlots(prev => [...prev, created]);
+        setBulkPlots(prev => [...prev, created]);
         const id = created.id;
         setNewPlotId(id);
         // Scroll to new row after render
@@ -527,7 +718,7 @@ export default function AdminProjectDetail() {
         ...updatedSellers[editingSellerIndex],
         name: newSellerName.trim(),
         phone: newSellerPhone.trim(),
-        email: newSellerEmail.trim() || undefined,
+        email: newSellerEmail.trim().toLowerCase() || undefined,
         address: newSellerAddress.trim() || undefined,
         kycDocuments: newKyc,
       };
@@ -535,7 +726,7 @@ export default function AdminProjectDetail() {
       const newSeller: SellerInfo = {
         name: newSellerName.trim(),
         phone: newSellerPhone.trim(),
-        email: newSellerEmail.trim() || undefined,
+        email: newSellerEmail.trim().toLowerCase() || undefined,
         address: newSellerAddress.trim() || undefined,
         kycDocuments: newSellerDocs.map((docName, idx) => ({
           id: `doc-${Date.now()}-${idx}`,
@@ -567,7 +758,10 @@ export default function AdminProjectDetail() {
 
   const filteredRecipients = useMemo(() => {
     return recipients.filter(r => {
-      const matchesSearch = !broadcastSearch.trim() || r.name.toLowerCase().includes(broadcastSearch.toLowerCase()) || r.phone.includes(broadcastSearch);
+      const matchesSearch = !broadcastSearch.trim() ||
+        r.name.toLowerCase().includes(broadcastSearch.toLowerCase()) ||
+        r.phone.includes(broadcastSearch) ||
+        (r.displayId && r.displayId.toLowerCase().includes(broadcastSearch.toLowerCase()));
 
       let matchesStatus = false;
       if (broadcastStatusFilters.includes('All')) {
@@ -713,6 +907,10 @@ export default function AdminProjectDetail() {
       }
       const updatedPlot = res.data;
       setPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      setGridPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      setBulkPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      setPendingApprovalPlots(prev => prev.filter(p => (p.id || (p as any)._id) !== pid));
+      fetchGridPlots(gridPlotPage);
       if (selectedPlot && (selectedPlot.id || (selectedPlot as any)._id) === pid) {
         setSelectedPlot(updatedPlot);
       }
@@ -739,6 +937,10 @@ export default function AdminProjectDetail() {
 
   const handleBookPlot = async () => {
     if (!selectedPlot || !selectedCustomer) return;
+    if (!expectedRegistrationDate.trim()) {
+      toast.error('Expected Registration Date is required to book a plot.');
+      return;
+    }
     if (saving) return;
     setSaving(true);
     const isStaffBooking = role !== 'admin';
@@ -812,12 +1014,14 @@ export default function AdminProjectDetail() {
         await leadService.update(customerId, {
           status: 'Customer',
           projectId: project?.id || (project as any)?._id,
-          plotId: plotId,
           paymentStatus: pStatus,
           paymentMethod: paymentMode === 'Loan' ? 'LOAN' : 'CASH',
         } as any);
       }
       setPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? updatedPlot : p));
+      setGridPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? updatedPlot : p));
+      setBulkPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? updatedPlot : p));
+      fetchGridPlots(gridPlotPage);
       setSelectedPlot(updatedPlot);
       logActivity({ id: authUser?.id || '', name: authUser?.name || 'Admin', role: role || 'admin', initials: authUser?.initials }, isStaffBooking ? `Submitted booking request for plot #${selectedPlot.plotNumber}` : `Booked plot #${selectedPlot.plotNumber}`, 'Status Change', 'Plot', plotId, `Plot #${selectedPlot.plotNumber}`);
       const { toast } = await import('sonner');
@@ -878,6 +1082,9 @@ export default function AdminProjectDetail() {
       }
       const regPlot = (regRes && (regRes as any).data) ? (regRes as any).data : updatedPlot;
       setPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? regPlot : p));
+      setGridPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? regPlot : p));
+      setBulkPlots(prev => prev.map(p => (p.id || (p as any)._id) === plotId ? regPlot : p));
+      fetchGridPlots(gridPlotPage);
       setSelectedPlot(regPlot);
 
       // Assign post-registration tasks to the staff who booked/handled the plot/lead; fallback to admin if no staff or booked by admin
@@ -1029,6 +1236,9 @@ export default function AdminProjectDetail() {
         toast.success(`Booking for Plot #${selectedPlot.plotNumber} has been cancelled.`);
       }
       setPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      setGridPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      setBulkPlots(prev => prev.map(p => (p.id || (p as any)._id) === pid ? updatedPlot : p));
+      fetchGridPlots(gridPlotPage);
       setSelectedPlot(updatedPlot);
     } catch (err: any) {
       const { toast } = await import('sonner');
@@ -1051,13 +1261,14 @@ export default function AdminProjectDetail() {
     );
   }
 
-  const registered = plots.filter(p => p.status === 'Registered').length;
-  const booked = plots.filter(p => p.status === 'Booked').length;
-  const rawAvailable = plots.filter(p => p.status === 'Available').length;
-  const rawCanceled = plots.filter(p => p.status === 'Canceled' || p.status === 'Cancelled').length;
+  const registered = projectPlotStats.Registered || 0;
+  const booked = projectPlotStats.Booked || 0;
+  const rawAvailable = projectPlotStats.Available || 0;
+  const rawCanceled = (projectPlotStats.Cancelled || 0) + (projectPlotStats.Canceled || 0);
   const available = isPartner ? (rawAvailable + rawCanceled) : rawAvailable;
   const canceled = isPartner ? 0 : rawCanceled;
-  const pending = plots.filter(p => p.status === 'Pending').length;
+  const pending = projectPlotStats.Pending || 0;
+  const displayTotalPlots = getProjectDisplayPlotTotal(project, projectPlotStats.total || 0);
 
   const tabs = isPartner ? [
     { key: 'overview' as const, label: 'Overview' },
@@ -1095,7 +1306,7 @@ export default function AdminProjectDetail() {
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             <StatusBadge status={project.status} />
             <span className="flex items-center gap-1 text-sm text-slate-500 bg-slate-50 px-2 py-0.5 rounded">
-              <MapPin size={13} /> {project.district || project.location}
+              <MapPin size={13} /> {project.location}
             </span>
             {project.latitude && project.longitude && (
               <button
@@ -1103,7 +1314,7 @@ export default function AdminProjectDetail() {
                 className="flex items-center gap-1 text-xs font-semibold text-brand-blue bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded transition-colors"
                 title="View on Map"
               >
-                <Map size={12} /> View Map
+                <MapIcon size={12} /> View Map
               </button>
             )}
           </div>
@@ -1139,11 +1350,37 @@ export default function AdminProjectDetail() {
               <Pencil size={14} /> Edit
             </button>
           )}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!project || !id) return;
+                setDeleteConfirm({
+                  open: true,
+                  title: 'Delete Project',
+                  message: `Are you sure you want to permanently delete "${project.name}"? This will also remove all associated plots and cannot be undone.`,
+                  onConfirm: async () => {
+                    try {
+                      await projectService.delete(id);
+                      toast.success(`Project "${project.name}" deleted successfully`);
+                      navigate(`/${role}/projects`);
+                    } catch (err: any) {
+                      toast.error(err?.message || 'Failed to delete project');
+                    }
+                  },
+                });
+              }}
+              className="flex items-center gap-2 px-3 py-2 border border-red-200 rounded-md text-sm font-semibold text-red-700 bg-red-50 hover:bg-red-100 transition-colors"
+              title="Delete this project permanently"
+            >
+              <Trash2 size={14} /> Delete
+            </button>
+          )}
         </div>
         {activeTab === 'plotmap' && isAdmin && (
           <div className="flex flex-wrap items-center gap-2">
             {(() => {
-              const pendingCount = plots.filter(p => p.status === 'Pending').length;
+              const pendingCount = projectPlotStats.Pending || 0;
               return (
                 <button
                   type="button"
@@ -1228,17 +1465,18 @@ export default function AdminProjectDetail() {
             <div className="divide-y divide-slate-50">
               {[
                 ['Project Name', <NameTag key="pn" name={project.name} displayId={project.displayId} />],
-                ['Location', project.district || project.location],
+                ['Location', project.location],
                 ['Status', ''],
                 ...(!isPartner ? [['Project Category', project.category || 'Open Plots'] as [string, any]] : []),
                 ['Description', project.description],
                 ['Total Land Area', `${project.totalLandArea} ${project.landAreaUnit}`],
-                ...(!isPartner ? [['Survey Number', project.surveyNumber] as [string, any]] : []),
+                ...(!isPartner ? [['Survey Number', project.surveyNumber || '—'] as [string, any]] : []),
+                ...(!isPartner ? [['DTCP Number', project.dtcpNumber || '—'] as [string, any]] : []),
                 ['Village', project.village],
                 ['Mandal', project.mandal],
                 ['District', project.district],
                 ['Land Type', project.landType],
-                ['Total Plots', String(project.totalPlots)],
+                ['Total Plots', String(displayTotalPlots)],
               ].map(([label, value], i) => (
                 <div key={label} className={`flex justify-between py-3 px-2 ${i % 2 === 0 ? 'bg-slate-50/50' : ''}`}>
                   <span className="text-xs text-slate-400 uppercase tracking-wide">{label}</span>
@@ -1254,7 +1492,7 @@ export default function AdminProjectDetail() {
           <div className="flex-[2] space-y-3">
             <div className="grid grid-cols-2 gap-3">
               {[
-                { label: 'Total Plots', value: project.totalPlots, icon: <LayoutGrid size={22} className="text-white" />, gradient: 'bg-gradient-to-br from-blue-600 to-indigo-500 shadow-blue-500/20' },
+                { label: 'Total Plots', value: displayTotalPlots, icon: <LayoutGrid size={22} className="text-white" />, gradient: 'bg-gradient-to-br from-blue-600 to-indigo-500 shadow-blue-500/20' },
                 { label: 'Available', value: available, icon: <Circle size={22} className="text-white" strokeWidth={2.5} />, gradient: 'bg-gradient-to-br from-slate-600 to-slate-500 shadow-slate-500/20' },
                 { label: 'Booked', value: booked, icon: <CheckCircle size={22} className="text-white" />, gradient: 'bg-gradient-to-br from-emerald-500 to-green-600 shadow-emerald-500/20' },
                 { label: 'Registered', value: registered, icon: <FileText size={22} className="text-white" />, gradient: 'bg-gradient-to-br from-blue-600 to-cyan-500 shadow-blue-500/20' },
@@ -1295,26 +1533,48 @@ export default function AdminProjectDetail() {
               ))}
             </div>
 
-            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-[repeat(auto-fill,minmax(80px,1fr))] gap-2">
-              {[...plots].sort((a, b) => String(a.plotNumber).localeCompare(String(b.plotNumber), undefined, { numeric: true })).map(plot => {
-                const isCancelled = plot.status === 'Canceled' || plot.status === 'Cancelled';
-                const effectiveStatus = (isPartner && isCancelled) ? 'Available' : plot.status;
-                const style = plotStatusStyles[effectiveStatus] || plotStatusStyles.Available;
-                return (
-                  <button
-                    key={plot.id}
-                    onClick={() => {
-                      if (!isPartner) setSelectedPlot(plot);
-                    }}
-                    className={`relative w-full aspect-square rounded-md flex items-center justify-center text-sm font-semibold transition-all ${
-                      !isPartner ? 'hover:scale-105 hover:shadow-md cursor-pointer' : 'cursor-default'
-                    } ${style.bg} ${style.textCol}`}
-                  >
-                    {plot.plotNumber}
-                  </button>
-                );
-              })}
-            </div>
+            {gridLoading ? (
+              <div className="flex items-center justify-center py-20 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                <div className="w-6 h-6 border-2 border-brand-green border-t-transparent rounded-full animate-spin mr-2" />
+                <span className="text-sm font-medium text-slate-500">Loading plots...</span>
+              </div>
+            ) : (
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-[repeat(auto-fill,minmax(80px,1fr))] gap-2">
+                {gridPlots.map(plot => {
+                  const isCancelled = plot.status === 'Canceled' || plot.status === 'Cancelled';
+                  const effectiveStatus = (isPartner && isCancelled) ? 'Available' : plot.status;
+                  const style = plotStatusStyles[effectiveStatus] || plotStatusStyles.Available;
+                  return (
+                    <button
+                      key={plot.id || (plot as any)._id}
+                      onClick={() => {
+                        if (!isPartner) setSelectedPlot(plot);
+                      }}
+                      className={`relative w-full aspect-square rounded-md flex items-center justify-center text-sm font-semibold transition-all ${
+                        !isPartner ? 'hover:scale-105 hover:shadow-md cursor-pointer' : 'cursor-default'
+                      } ${style.bg} ${style.textCol}`}
+                    >
+                      {plot.plotNumber}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {gridTotalPages > 1 && (
+              <PaginationControls
+                currentPage={gridPlotPage}
+                totalPages={gridTotalPages}
+                onPageChange={(page) => {
+                  setGridPlotPage(page);
+                  fetchGridPlots(page);
+                }}
+                totalCount={gridTotalPlots}
+                perPage={50}
+                itemName="plots"
+                className="mt-4"
+              />
+            )}
           </div>
         </div>
       )}
@@ -2243,6 +2503,14 @@ export default function AdminProjectDetail() {
                             Change
                           </button>
                         </div>
+                        {((Array.isArray(selectedCustomer.plotIds) && selectedCustomer.plotIds.length > 0) || selectedCustomer.plotId) && (
+                          <div className="flex items-start gap-2 p-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px]">
+                            <AlertTriangle size={14} className="shrink-0 mt-0.5 text-amber-600" />
+                            <span>
+                              This customer already has other booked or pending plot(s). Confirming adds another booking and does not release existing sites.
+                            </span>
+                          </div>
+                        )}
 
                         <div>
                           <label className="block text-xs font-semibold text-slate-600 mb-1">Expected Registration Date</label>
@@ -2727,9 +2995,15 @@ export default function AdminProjectDetail() {
           <div className="flex justify-end w-full">
             <button
               onClick={async () => {
-                const duplicateExists = plots.some((p1, i1) =>
-                  plots.some((p2, i2) => i1 !== i2 && String(p1.plotNumber).trim() !== '' && String(p1.plotNumber).trim() === String(p2.plotNumber).trim())
-                );
+                const seenPlots = new Set<string>();
+                let duplicateExists = false;
+                for (const p of bulkPlots) {
+                  const num = String(p.plotNumber || '').trim();
+                  if (num !== '') {
+                    if (seenPlots.has(num)) { duplicateExists = true; break; }
+                    seenPlots.add(num);
+                  }
+                }
                 if (duplicateExists) {
                   const { toast } = await import('sonner');
                   toast.error('Duplicate plot numbers found! Please ensure all plot numbers are unique before saving.');
@@ -2737,11 +3011,23 @@ export default function AdminProjectDetail() {
                 }
                 setSaving(true);
                 try {
-                  const dirtyPlots = plots.filter(p => dirtyPlotIds.has(p.id || (p as any)._id));
+                  const dirtyPlots = bulkPlots.filter(p => dirtyPlotIds.has(p.id || (p as any)._id));
                   await Promise.all(dirtyPlots.map(p => plotService.update(p.id || (p as any)._id, p)));
+                  setPlots(prev => prev.map(p => {
+                    const pid = p.id || (p as any)._id;
+                    const match = dirtyPlots.find(dp => (dp.id || (dp as any)._id) === pid);
+                    return match ? { ...p, ...match } : p;
+                  }));
+                  setGridPlots(prev => prev.map(p => {
+                    const pid = p.id || (p as any)._id;
+                    const match = dirtyPlots.find(dp => (dp.id || (dp as any)._id) === pid);
+                    return match ? { ...p, ...match } : p;
+                  }));
                   setDirtyPlotIds(new Set());
                   const { toast } = await import('sonner');
                   toast.success('All plot changes saved!');
+                  fetchBulkPlots(bulkPlotPage, bulkSearch, bulkPendingOnly);
+                  fetchGridPlots(gridPlotPage);
                   setBulkEditOpen(false);
                 } catch (err: any) {
                   const { toast } = await import('sonner');
@@ -2775,17 +3061,13 @@ export default function AdminProjectDetail() {
                 onClick={handleAddSinglePlot}
                 disabled={(() => {
                   if (!project?.totalLandArea) return false;
-                  const toSqFt = (v: number, u: string) => { const uu = (u || '').toLowerCase().replace(/\s/g, ''); if (uu === 'sqyards' || uu === 'sqyard') return v * 9; if (uu === 'acres' || uu === 'acre') return v * 43560; if (uu === 'cents' || uu === 'cent') return v * 435.6; return v; };
-                  const projectSqFt = toSqFt(project.totalLandArea, project.landAreaUnit);
-                  const allocatedSqFt = plots.reduce((s, p) => s + toSqFt(Number(p.size) || 0, p.sizeUnit), 0);
-                  return allocatedSqFt >= projectSqFt;
+                  const projectSqFt = toSqFtHelper(project.totalLandArea, project.landAreaUnit);
+                  return totalAllocatedSqFt >= projectSqFt;
                 })()}
                 title={(() => {
                   if (!project?.totalLandArea) return '';
-                  const toSqFt = (v: number, u: string) => { const uu = (u || '').toLowerCase().replace(/\s/g, ''); if (uu === 'sqyards' || uu === 'sqyard') return v * 9; if (uu === 'acres' || uu === 'acre') return v * 43560; if (uu === 'cents' || uu === 'cent') return v * 435.6; return v; };
-                  const projectSqFt = toSqFt(project.totalLandArea, project.landAreaUnit);
-                  const allocatedSqFt = plots.reduce((s, p) => s + toSqFt(Number(p.size) || 0, p.sizeUnit), 0);
-                  return allocatedSqFt >= projectSqFt ? 'Total land area fully allocated — cannot add more plots' : '';
+                  const projectSqFt = toSqFtHelper(project.totalLandArea, project.landAreaUnit);
+                  return totalAllocatedSqFt >= projectSqFt ? 'Total land area fully allocated — cannot add more plots' : '';
                 })()}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-green text-white text-xs font-semibold rounded-md hover:bg-brand-darkgreen active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -2803,20 +3085,19 @@ export default function AdminProjectDetail() {
 
           {/* ── Land Area Usage Bar ─────────────────────────────────────────── */}
           {project?.totalLandArea && (() => {
-            const toSqFt = (v: number, u: string) => { const uu = (u || '').toLowerCase().replace(/\s/g, ''); if (uu === 'sqyards' || uu === 'sqyard') return v * 9; if (uu === 'acres' || uu === 'acre') return v * 43560; if (uu === 'cents' || uu === 'cent') return v * 435.6; return v; };
-            const projectSqFt = toSqFt(project.totalLandArea, project.landAreaUnit);
-            const allocatedSqFt = plots.reduce((s, p) => s + toSqFt(Number(p.size) || 0, p.sizeUnit), 0);
-            const pct = Math.min(100, (allocatedSqFt / projectSqFt) * 100);
-            const isOver = allocatedSqFt > projectSqFt;
-            const remaining = Math.max(0, projectSqFt - allocatedSqFt);
+            const projectSqFt = toSqFtHelper(project.totalLandArea, project.landAreaUnit);
+            const allocatedSqFtVal = totalAllocatedSqFt;
+            const pct = Math.min(100, (allocatedSqFtVal / projectSqFt) * 100);
+            const isOver = allocatedSqFtVal > projectSqFt;
+            const remaining = Math.max(0, projectSqFt - allocatedSqFtVal);
             return (
               <div className="px-1">
                 <div className="flex items-center justify-between text-[10px] font-semibold mb-1">
                   <span className={isOver ? 'text-red-600' : 'text-slate-500'}>Land Area Usage</span>
                   <span className={isOver ? 'text-red-600 font-bold' : 'text-slate-600'}>
-                    {Math.round(allocatedSqFt).toLocaleString()} / {Math.round(projectSqFt).toLocaleString()} sq ft
+                    {Math.round(allocatedSqFtVal).toLocaleString()} / {Math.round(projectSqFt).toLocaleString()} sq ft
                     {isOver
-                      ? <span className="ml-1 text-red-600"> ⚠ Exceeded by {Math.round(allocatedSqFt - projectSqFt).toLocaleString()} sq ft</span>
+                      ? <span className="ml-1 text-red-600"> ⚠ Exceeded by {Math.round(allocatedSqFtVal - projectSqFt).toLocaleString()} sq ft</span>
                       : <span className="ml-1 text-slate-400">({Math.round(remaining).toLocaleString()} sq ft remaining)</span>
                     }
                   </span>
@@ -2842,30 +3123,35 @@ export default function AdminProjectDetail() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {plots.filter(p => {
-                    if (bulkPendingOnly && p.status !== 'Pending') return false;
-                    if (bulkSearch && !String(p.plotNumber).includes(bulkSearch)) return false;
-                    return true;
-                  }).sort((a, b) => String(a.plotNumber).localeCompare(String(b.plotNumber), undefined, { numeric: true })).map(plot => (
+                  {bulkLoading ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-12 text-slate-400">
+                        <div className="flex items-center justify-center gap-2">
+                          <div className="w-5 h-5 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
+                          <span className="text-xs font-medium">Loading plots...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : bulkPlots.map(plot => (
                     <tr
-                      key={plot.id}
-                      id={`plot-row-${plot.id}`}
-                      className={`hover:bg-slate-50 transition-colors ${newPlotId === plot.id ? 'animate-[flash-row_1.5s_ease-out]' : ''}`}
-                      style={newPlotId === plot.id ? { background: 'rgb(209 250 229)' } : undefined}
+                      key={plot.id || (plot as any)._id}
+                      id={`plot-row-${plot.id || (plot as any)._id}`}
+                      className={`hover:bg-slate-50 transition-colors ${newPlotId === (plot.id || (plot as any)._id) ? 'animate-[flash-row_1.5s_ease-out]' : ''}`}
+                      style={newPlotId === (plot.id || (plot as any)._id) ? { background: 'rgb(209 250 229)' } : undefined}
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
                           <input
                             type="text"
                             value={plot.plotNumber}
-                            onChange={e => handleBulkPlotChange(plot.id, 'plotNumber', e.target.value as any)}
+                            onChange={e => handleBulkPlotChange(plot.id || (plot as any)._id, 'plotNumber', e.target.value as any)}
                             className={`h-8 w-20 px-2 border rounded text-xs font-bold transition-colors ${
-                              plots.some(p => p.id !== plot.id && String(p.plotNumber).trim() !== '' && String(p.plotNumber).trim() === String(plot.plotNumber).trim())
+                              duplicatePlotNumbers.has(String(plot.plotNumber).trim())
                                 ? 'border-red-400 bg-red-50 text-red-900 focus:border-red-500 outline-none'
                                 : 'border-slate-200 text-slate-900 focus:border-brand-green outline-none'
                             }`}
                             title={
-                              plots.some(p => p.id !== plot.id && String(p.plotNumber).trim() !== '' && String(p.plotNumber).trim() === String(plot.plotNumber).trim())
+                              duplicatePlotNumbers.has(String(plot.plotNumber).trim())
                                 ? 'Duplicate plot number'
                                 : ''
                             }
@@ -2883,7 +3169,7 @@ export default function AdminProjectDetail() {
                       <td className="px-4 py-3">
                         <select
                           value={plot.status}
-                          onChange={e => handleBulkPlotChange(plot.id, 'status', e.target.value)}
+                          onChange={e => handleBulkPlotChange(plot.id || (plot as any)._id, 'status', e.target.value)}
                           className={`h-8 px-2 border border-slate-200 rounded text-xs bg-white font-semibold ${statusCellColors[plot.status] || ''}`}
                         >
                           <option value="Available" className="text-slate-650 font-semibold">Available</option>
@@ -2894,7 +3180,7 @@ export default function AdminProjectDetail() {
                         </select>
                       </td>
                       <td className="px-4 py-3">
-                        <select value={plot.facing} onChange={e => handleBulkPlotChange(plot.id, 'facing', e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs bg-white">
+                        <select value={plot.facing} onChange={e => handleBulkPlotChange(plot.id || (plot as any)._id, 'facing', e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs bg-white">
                           <option value="North">North</option>
                           <option value="North East">North East</option>
                           <option value="North West">North West</option>
@@ -2907,24 +3193,21 @@ export default function AdminProjectDetail() {
                       </td>
                       <td className="px-4 py-3">
                         {(() => {
-                          const toSqFt = (v: number, u: string) => { const uu = (u || '').toLowerCase().replace(/\s/g, ''); if (uu === 'sqyards' || uu === 'sqyard') return v * 9; if (uu === 'acres' || uu === 'acre') return v * 43560; return v; };
-                          const projectSqFt = project?.totalLandArea ? toSqFt(project.totalLandArea, project.landAreaUnit) : Infinity;
-                          const othersSqFt = plots.filter(p => p.id !== plot.id).reduce((s, p) => s + toSqFt(Number(p.size) || 0, p.sizeUnit), 0);
-                          const thisPlotSqFt = toSqFt(Number(plot.size) || 0, plot.sizeUnit);
-                          const isExceeding = othersSqFt + thisPlotSqFt > projectSqFt;
+                          const projectSqFt = project?.totalLandArea ? toSqFtHelper(project.totalLandArea, project.landAreaUnit) : Infinity;
+                          const isExceeding = totalAllocatedSqFt > projectSqFt;
                           return (
                             <input
                               type="number"
                               value={plot.size}
-                              onChange={e => handleBulkPlotChange(plot.id, 'size', Number(e.target.value))}
-                              title={isExceeding ? 'This plot size causes total allocation to exceed project land area' : ''}
+                              onChange={e => handleBulkPlotChange(plot.id || (plot as any)._id, 'size', Number(e.target.value))}
+                              title={isExceeding ? 'Total allocation exceeds project land area' : ''}
                               className={`h-8 w-20 px-2 border rounded text-xs ${isExceeding ? 'border-red-400 bg-red-50 text-red-700' : 'border-slate-200'}`}
                             />
                           );
                         })()}
                       </td>
                       <td className="px-4 py-3">
-                        <select value={plot.sizeUnit} onChange={e => handleBulkPlotChange(plot.id, 'sizeUnit', e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs bg-white">
+                        <select value={plot.sizeUnit} onChange={e => handleBulkPlotChange(plot.id || (plot as any)._id, 'sizeUnit', e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs bg-white">
                           <option>Sq Yards</option>
                           <option>Sq Feet</option>
                         </select>
@@ -2954,10 +3237,38 @@ export default function AdminProjectDetail() {
                       </td>
                     </tr>
                   ))}
+                  {!bulkLoading && bulkPlots.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center py-12 text-slate-400">
+                        <div className="flex flex-col items-center justify-center gap-1.5">
+                          <Search size={22} className="text-slate-300 mb-1" />
+                          <p className="text-sm font-semibold text-slate-600">No plots found</p>
+                          <p className="text-xs text-slate-400">
+                            {bulkSearch ? `No plots matching "${bulkSearch}"` : 'No plots available to display'}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
+
+          {bulkTotalPages > 1 && (
+            <PaginationControls
+              currentPage={bulkPlotPage}
+              totalPages={bulkTotalPages}
+              onPageChange={(page) => {
+                setBulkPlotPage(page);
+                fetchBulkPlots(page, bulkSearch, bulkPendingOnly);
+              }}
+              totalCount={bulkTotalPlots}
+              perPage={50}
+              itemName="plots"
+              className="mt-3"
+            />
+          )}
         </div>
       </Modal>
 
@@ -2965,12 +3276,17 @@ export default function AdminProjectDetail() {
       <Modal
         open={approvalsModalOpen}
         onClose={() => setApprovalsModalOpen(false)}
-        title={`Pending Approvals (${plots.filter(p => p.status === 'Pending').length})`}
+        title={`Pending Approvals (${projectPlotStats.Pending || 0})`}
         size="lg"
       >
         <div className="space-y-4 py-2">
-          {(() => {
-            const pendingPlots = plots.filter(p => p.status === 'Pending');
+          {pendingApprovalLoading ? (
+            <div className="text-center py-12">
+              <div className="w-6 h-6 border-2 border-brand-green border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-xs text-slate-500 font-medium">Loading pending approvals...</p>
+            </div>
+          ) : (() => {
+            const pendingPlots = pendingApprovalPlots;
             if (pendingPlots.length === 0) {
               return (
                 <div className="text-center py-12 bg-slate-50 rounded-lg border border-dashed border-slate-200">
@@ -3194,13 +3510,29 @@ export default function AdminProjectDetail() {
         project={project}
         onSave={async (updated) => {
           try {
-            const pid = project.id || (project as any)._id;
-            await projectService.update(pid, updated);
-            setProject(updated);
-            import('sonner').then(m => m.toast.success('Project updated successfully!'));
+            const pid = id || project?.id || (project as any)?._id;
+            if (!pid) throw new Error('Project ID not found');
+            const res = await projectService.update(pid, updated);
+            
+            // Re-fetch project from backend to ensure all populated fields, virtuals, and timestamps are synced
+            const freshProjectRes = await projectService.getById(pid);
+            const freshProject = freshProjectRes?.data || res?.data || updated;
+            if (freshProject) {
+              if (!freshProject.images) freshProject.images = [];
+              if (!freshProject.plotImages) freshProject.plotImages = [];
+              setProject(freshProject);
+            }
+            
+            // Also refresh grid plots & stats so plot counts, availability, and plot map are completely up to date immediately
+            await fetchGridPlots(gridPlotPage);
+            
+            const { toast } = await import('sonner');
+            toast.success('Project updated successfully!');
             setEditOpen(false);
           } catch (err: any) {
-            import('sonner').then(m => m.toast.error(err.message || 'Failed to update project'));
+            const { toast } = await import('sonner');
+            toast.error(err.message || 'Failed to update project');
+            throw err;
           }
         }}
       />
@@ -3459,7 +3791,7 @@ export default function AdminProjectDetail() {
                   type="email"
                   placeholder="email@example.com"
                   value={newSellerEmail}
-                  onChange={e => setNewSellerEmail(e.target.value)}
+                  onChange={e => setNewSellerEmail(e.target.value.toLowerCase())}
                   className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm outline-none focus:border-brand-green bg-white"
                 />
               </div>

@@ -6,12 +6,14 @@ import { Timeline } from '@/components/shared/Timeline';
 import { Avatar } from '@/components/shared/Avatar';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
-import { plotService, projectService, leadService, attendanceService, activityLogService, userService } from '@/services';
+import { leadService, attendanceService, activityLogService, userService, reportService } from '@/services';
+import type { OperationsMetricsData, DashboardLeadChartsData } from '@/services/report';
+import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
 import { useAuth } from '@/context/AuthContext';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell
 } from 'recharts';
-import type { Project, Lead, AttendanceRecord, ActivityLog, User, Plot } from '@/types';
+import type { AttendanceRecord, ActivityLog, User } from '@/types';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 
 function formatISTTime(dateVal?: string): string {
@@ -46,12 +48,15 @@ export default function AdminDashboard() {
   const navigate = useNavigate();
   const { role } = useAuth();
 
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [allPlots, setAllPlots] = useState<Plot[]>([]);
+  const [projects, setProjects] = useState(0);
+  const [leadCounts, setLeadCounts] = useState({ All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 });
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [staff, setStaff] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+  const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
+  const [opsLoading, setOpsLoading] = useState(true);
+  const [chartData, setChartData] = useState<DashboardLeadChartsData | null>(null);
+  const [chartsLoading, setChartsLoading] = useState(true);
 
   // Recent Activity Infinite Scroll states (server-side)
   const [activityList, setActivityList] = useState<ActivityLog[]>([]);
@@ -64,9 +69,21 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     Promise.allSettled([
-      projectService.getAll({ limit: 100 }).then(r => setProjects(r.data || [])).catch(() => {}),
-      leadService.getAll({ limit: 100 }).then(r => setLeads(r.data || [])).catch(() => {}),
-      plotService.getAll({ limit: 1000 }).then(r => setAllPlots(r.data || [])).catch(() => {}),
+      reportService.getSummary().then(r => {
+        const data = r.data || (r as unknown as { totalProjects?: number });
+        setProjects(data.totalProjects ?? 0);
+      }).catch(() => {}),
+      leadService.getCounts().then(r => {
+        const data = r.data || (r as unknown as typeof leadCounts);
+        setLeadCounts({
+          All: data.All ?? 0,
+          Open: data.Open ?? 0,
+          Reserved: data.Reserved ?? 0,
+          Qualified: data.Qualified ?? 0,
+          Unqualified: data.Unqualified ?? 0,
+          Customer: data.Customer ?? 0,
+        });
+      }).catch(() => {}),
       attendanceService.getToday().then(r => setAttendance(r.data || [])).catch(() => {}),
       activityLogService.getAll({ limit: 10, page: 1, sort: '-timestamp' }).then(r => {
         setActivityList(r.data || []);
@@ -74,27 +91,23 @@ export default function AdminDashboard() {
         setHasMoreActivity(!!(pagination && pagination.next));
       }).catch(() => {}),
       userService.getAll({ role: 'staff', limit: 100 }).then(r => setStaff(r.data || [])).catch(() => {}),
-    ]).finally(() => setLoading(false));
+      reportService.getOperationsMetrics().then(r => {
+        setOpsMetrics(r.data || (r as unknown as OperationsMetricsData));
+      }).catch(() => {}),
+      reportService.getDashboardLeadCharts().then(r => {
+        setChartData(r.data || (r as unknown as DashboardLeadChartsData));
+      }).catch(() => {}),
+    ]).finally(() => {
+      setLoading(false);
+      setOpsLoading(false);
+      setChartsLoading(false);
+    });
   }, []);
 
-  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const todayStr = useMemo(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), []);
 
-  const todaysRegistrationsCount = useMemo(() => {
-    return allPlots.filter(p => {
-      if (p.status !== 'Booked') return false;
-      if (!p.expectedRegistrationDate) return false;
-      const expDateStr = String(p.expectedRegistrationDate).split('T')[0];
-      return expDateStr === todayStr;
-    }).length;
-  }, [allPlots, todayStr]);
-
-  const pendingPaymentCustomersCount = useMemo(() => {
-    return allPlots.filter(p => {
-      if (p.status !== 'Registered') return false;
-      const pStatus = p.bookedBy?.paymentStatus || (p as any).paymentStatus;
-      return pStatus !== 'Fully Paid';
-    }).length;
-  }, [allPlots]);
+  const todaysRegistrationsCount = opsMetrics?.todaysRegistrations ?? 0;
+  const pendingPaymentCustomersCount = opsMetrics?.pendingPaymentRegistrations ?? 0;
 
   const sortedActivityList = useMemo(() => {
     return [...activityList].sort((a, b) => {
@@ -104,8 +117,9 @@ export default function AdminDashboard() {
     });
   }, [activityList]);
 
-  const totalProjects = projects.length;
-  const totalLeads = leads.length;
+  const totalProjects = projects;
+  const totalLeads = leadCounts.All;
+  const plotsBooked = opsMetrics?.registrationPending ?? 0;
   // Deduplicate by staffId — multiple check-ins from same staff count as 1
   const uniquePresentStaffIds = new Set(
     attendance
@@ -115,34 +129,10 @@ export default function AdminDashboard() {
   );
   const staffPresent = uniquePresentStaffIds.size;
   const staffTotal = staff.length;
-  const plotsBooked = leads.filter(l => l.status === 'Customer').length;
 
-  // Lead source breakdown
-  const partnerLeads = leads.filter(l => l.sourceType === 'Channel Partner').length;
-  const staffLeads = leads.filter(l => l.sourceType === 'Staff').length;
-  const adminLeads = leads.filter(l => l.sourceType === 'Admin' || l.sourceType === 'Admin Added' || l.sourceType === 'Direct').length;
-  const otherLeads = leads.filter(l =>
-    l.sourceType !== 'Channel Partner' &&
-    l.sourceType !== 'Staff' &&
-    l.sourceType !== 'Admin' &&
-    l.sourceType !== 'Admin Added' &&
-    l.sourceType !== 'Direct'
-  ).length;
-  const totalLeadsSrc = leads.length || 1;
-  const leadSourceData = [
-    { name: 'Channel Partners', value: Math.round((partnerLeads / totalLeadsSrc) * 100), color: '#3B82F6' },
-    { name: 'Staff Added', value: Math.round((staffLeads / totalLeadsSrc) * 100), color: '#F59E0B' },
-    { name: 'Admin Added', value: Math.round((adminLeads / totalLeadsSrc) * 100), color: '#10B981' },
-    { name: 'Others', value: Math.round((otherLeads / totalLeadsSrc) * 100), color: '#8B5CF6' },
-  ];
-
-  // Monthly leads trend (group by month from createdAt)
-  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const leadTrendsData = monthNames.slice(0, 6).map(m => ({
-    name: m,
-    Leads: leads.filter(l => { const d = new Date(l.dateAdded || ''); return monthNames[d.getMonth()] === m; }).length,
-    Bookings: leads.filter(l => { const d = new Date(l.dateAdded || ''); return monthNames[d.getMonth()] === m && l.status === 'Customer'; }).length,
-  }));
+  const leadTrendsData = chartData?.monthlyTrend ?? [];
+  const leadSourceData = chartData?.sourceBreakdown ?? [];
+  const chartTotalLeads = chartData?.totalLeads ?? totalLeads;
 
   // Group and sort attendance: Present staff first, followed by Half Day and Absent
   const sortedAttendance = useMemo(() => {
@@ -194,16 +184,24 @@ export default function AdminDashboard() {
     }
   };
 
-  // Upcoming birthdays from staff
+  // Upcoming birthdays from staff strictly within the next 30 days (BUG-11)
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const thirtyDaysLater = new Date(today);
+  thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+
   const upcomingBirthdays = staff
     .filter(s => s.dob)
     .map(s => {
       const dob = new Date(s.dob!);
-      const next = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
-      if (next < today) next.setFullYear(next.getFullYear() + 1);
+      let next = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
+      next.setHours(0, 0, 0, 0);
+      if (next < today) {
+        next.setFullYear(next.getFullYear() + 1);
+      }
       return { ...s, nextBirthday: next, dateStr: next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) };
     })
+    .filter(s => s.nextBirthday >= today && s.nextBirthday <= thirtyDaysLater)
     .sort((a, b) => a.nextBirthday.getTime() - b.nextBirthday.getTime())
     .slice(0, 4);
 
@@ -291,18 +289,33 @@ export default function AdminDashboard() {
         </button>
       </div>
 
+      <div className="space-y-2">
+        <h2 className="text-sm font-bold text-slate-800">Operations Overview</h2>
+        <OperationsMetricsCards
+          metrics={opsMetrics}
+          loading={opsLoading}
+          role={role}
+          onNavigate={navigate}
+        />
+      </div>
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Area Chart */}
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-sm sm:text-base font-semibold text-slate-900">Leads &amp; Bookings Trend</h2>
+              <h2 className="text-sm sm:text-base font-semibold text-slate-900">Leads &amp; Customers Trend</h2>
               <p className="text-xs text-slate-400">Monthly breakdown</p>
             </div>
             <span className="text-[11px] font-semibold text-brand-blue bg-blue-50 px-2 py-0.5 rounded">Last 6 Months</span>
           </div>
           <div className="h-40 sm:h-56 w-full text-[10px]">
+            {chartsLoading ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="w-6 h-6 border-2 border-brand-blue border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={leadTrendsData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
                 <defs>
@@ -319,9 +332,10 @@ export default function AdminDashboard() {
                 <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: '6px' }} />
                 <Legend iconType="circle" wrapperStyle={{ paddingTop: '5px' }} />
                 <Area type="monotone" dataKey="Leads" stroke="#3B82F6" strokeWidth={1.5} fillOpacity={1} fill="url(#colorLeads)" />
-                <Area type="monotone" dataKey="Bookings" stroke="#10B981" strokeWidth={1.5} fillOpacity={1} fill="url(#colorBookings)" />
+                <Area type="monotone" dataKey="Bookings" name="Customers" stroke="#10B981" strokeWidth={1.5} fillOpacity={1} fill="url(#colorBookings)" />
               </AreaChart>
             </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -331,6 +345,11 @@ export default function AdminDashboard() {
           <p className="text-xs text-slate-400 mt-0.5">By channel type</p>
           <div className="flex flex-row lg:flex-col items-center gap-4 mt-3">
             <div className="h-28 w-28 sm:h-36 sm:w-36 lg:h-32 lg:w-full relative shrink-0">
+              {chartsLoading ? (
+                <div className="h-full flex items-center justify-center">
+                  <div className="w-6 h-6 border-2 border-brand-blue border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={leadSourceData} cx="50%" cy="50%" innerRadius={36} outerRadius={50} paddingAngle={3} dataKey="value">
@@ -339,13 +358,16 @@ export default function AdminDashboard() {
                   <Tooltip formatter={(value) => [`${value}%`, 'Share']} contentStyle={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: '6px', fontSize: '11px' }} />
                 </PieChart>
               </ResponsiveContainer>
+              )}
+              {!chartsLoading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-lg font-bold text-slate-800">{totalLeads}</span>
+                <span className="text-lg font-bold text-slate-800">{chartTotalLeads}</span>
                 <span className="text-[9px] uppercase font-semibold text-slate-400">Leads</span>
               </div>
+              )}
             </div>
             <div className="flex-1 w-full space-y-2">
-              {leadSourceData.map(src => (
+              {!chartsLoading && leadSourceData.map(src => (
                 <div key={src.name} className="flex items-center justify-between text-[11px]">
                   <div className="flex items-center gap-1.5 text-slate-600">
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: src.color }} />

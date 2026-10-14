@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MapPin, Building2, Search, SlidersHorizontal, ChevronLeft, ChevronRight, X, AlertTriangle, Share2 } from 'lucide-react';
+import { Plus, MapPin, Building2, Search, SlidersHorizontal, ChevronLeft, ChevronRight, X, AlertTriangle, Share2, Trash2 } from 'lucide-react';
 import { useDebounce } from '@/hooks/useDebounce';
 import { Modal } from '@/components/shared/Modal';
 import { toast } from 'sonner';
@@ -15,12 +15,13 @@ import { usePaginated } from '@/hooks/useApi';
 import { getFileUrl } from '@/lib/api';
 import { useExportContext } from '@/context/ExportContext';
 import type { Project } from '@/types';
+import { getProjectInventoryPlotTotal } from '@/lib/projectPlotCounts';
 
 export default function AdminProjects() {
   const [modalOpen, setModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearchQuery = useDebounce(searchQuery);
-  const { triggerDownload } = useExportContext();
+  const { triggerDownload, setExportInfo } = useExportContext();
   const [statusFilter, setStatusFilter] = useState('All');
   const [locationFilter, setLocationFilter] = useState('All');
   const [categoryFilter, setCategoryFilter] = useState('All');
@@ -50,7 +51,7 @@ export default function AdminProjects() {
       if (statusFilter !== 'All') {
         f.status = statusFilter;
       } else {
-        f['status[in]'] = 'Active,Upcoming,Completed,active,upcoming,completed';
+        f['status[in]'] = 'Active,Upcoming,Completed,On Hold,active,upcoming,completed,on hold';
       }
     } else if (statusFilter !== 'All') {
       f.status = statusFilter;
@@ -58,7 +59,8 @@ export default function AdminProjects() {
     if (locationFilter !== 'All') f.location = locationFilter;
     if (categoryFilter !== 'All') f.category = categoryFilter;
     if (debouncedSearchQuery.trim()) f.search = debouncedSearchQuery.trim();
-    f.select = 'name,location,district,totalPlots,totalLandArea,landAreaUnit,status,isEnabled,plotImages,images';
+    f.sort = 'statusPriority';
+    f.select = 'name,displayId,location,district,totalPlots,totalLandArea,landAreaUnit,status,isEnabled,plotImages,images';
     return f;
   }, [role, isPartner, isStaff, statusFilter, locationFilter, categoryFilter, debouncedSearchQuery]);
 
@@ -69,6 +71,38 @@ export default function AdminProjects() {
   );
 
   const totalPages = useMemo(() => (total > 0 ? Math.ceil(total / PAGE_LIMIT) : 0), [total]);
+
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (isPartner) {
+      params['status[in]'] = 'Active,Upcoming,active,upcoming';
+    } else if (isStaff) {
+      if (statusFilter !== 'All') {
+        params.status = statusFilter;
+      } else {
+        params['status[in]'] = 'Active,Upcoming,Completed,On Hold,active,upcoming,completed,on hold';
+      }
+    } else if (statusFilter !== 'All') {
+      params.status = statusFilter;
+    }
+    if (locationFilter !== 'All') params.location = locationFilter;
+    if (categoryFilter !== 'All') params.category = categoryFilter;
+    if (debouncedSearchQuery.trim()) params.search = debouncedSearchQuery.trim();
+
+    setExportInfo({
+      endpoint: '/export/projects',
+      filename: 'projects',
+      params,
+    });
+  }, [
+    statusFilter,
+    locationFilter,
+    categoryFilter,
+    debouncedSearchQuery,
+    isPartner,
+    isStaff,
+    setExportInfo,
+  ]);
 
   // Build page numbers array with ellipsis — memoised so it only recalculates when page/totalPages changes
   const pageNumbers = useMemo<(number | 'left-ellipsis' | 'right-ellipsis')[]>(() => {
@@ -123,36 +157,6 @@ export default function AdminProjects() {
       setDeleting(false);
     }
   };
-
-  const sortedProjects = useMemo(() => {
-    const statusPriority: Record<string, number> = {
-      'active': 1,
-      'upcoming': 2,
-      'on hold': 3,
-      'completed': 4,
-    };
-
-    let list = projects;
-    if (isPartner) {
-      list = list.filter(p => {
-        const st = (p.status || 'Active').toLowerCase();
-        return st === 'active' || st === 'upcoming';
-      });
-    } else if (isStaff) {
-      list = list.filter(p => {
-        const st = (p.status || 'Active').toLowerCase();
-        return st === 'active' || st === 'upcoming' || st === 'completed';
-      });
-    }
-
-    return [...list].sort((a, b) => {
-      const statusA = (a.status || 'Active').toLowerCase();
-      const statusB = (b.status || 'Active').toLowerCase();
-      const prioA = statusPriority[statusA] ?? 99;
-      const prioB = statusPriority[statusB] ?? 99;
-      return prioA - prioB;
-    });
-  }, [projects, isPartner, isStaff]);
 
   return (
     <div>
@@ -250,7 +254,7 @@ export default function AdminProjects() {
             </div>
           ))}
         </div>
-      ) : sortedProjects.length === 0 ? (
+      ) : projects.length === 0 ? (
         <div className="text-center py-16">
           <Building2 size={40} className="mx-auto text-slate-300 mb-3" />
           <p className="text-slate-500 text-sm">No projects match your filters</p>
@@ -259,9 +263,9 @@ export default function AdminProjects() {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-            {sortedProjects.map((project, idx) => {
+            {projects.map((project) => {
               const id = project.id || (project as unknown as { _id: string })._id;
-              const displayId = project.displayId || `PROJ-${idx + 1}`;
+              const displayId = project.displayId || '—';
               const heroImg = (project.images && project.images.length > 0 ? project.images[0] : null) ||
                               (project.plotImages && project.plotImages.length > 0 ? project.plotImages[0] : null);
               return (
@@ -287,11 +291,11 @@ export default function AdminProjects() {
                     <p className="text-xs text-slate-550 font-bold mt-1">ID: {displayId}</p>
                     <div className="flex flex-wrap gap-2 mt-3">
                       <span className="text-xs bg-slate-50 text-slate-500 px-2 py-1 rounded border border-slate-100">{project.totalLandArea} {project.landAreaUnit}</span>
-                      <span className="text-xs bg-slate-50 text-slate-500 px-2 py-1 rounded border border-slate-100">{project.totalPlots} Total Plots</span>
+                      <span className="text-xs bg-slate-50 text-slate-500 px-2 py-1 rounded border border-slate-100">{getProjectInventoryPlotTotal(project)} Total Plots</span>
                       <span className="text-xs bg-slate-50 text-slate-500 px-2 py-1 rounded border border-slate-100">{project.availablePlots !== undefined ? project.availablePlots : '-'} Available</span>
                     </div>
-                    <div className="flex gap-2 mt-4">
-                      <button onClick={() => navigate(`/${role}/projects/${id}`)} className="flex-1 py-2 border border-slate-200 text-slate-700 text-sm font-medium rounded-md hover:bg-slate-50 transition-colors">View Details</button>
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      <button onClick={() => navigate(`/${role}/projects/${id}`)} className="flex-1 min-w-[120px] py-2 border border-slate-200 text-slate-700 text-sm font-medium rounded-md hover:bg-slate-50 transition-colors">View Details</button>
                       <button
                         type="button"
                         onClick={(e) => {
@@ -305,6 +309,17 @@ export default function AdminProjects() {
                         <Share2 size={14} />
                         <span>Share</span>
                       </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteClick(e, id, project.name)}
+                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-sm font-semibold rounded-md transition-colors shrink-0"
+                          title="Delete Project"
+                        >
+                          <Trash2 size={14} />
+                          <span>Delete</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

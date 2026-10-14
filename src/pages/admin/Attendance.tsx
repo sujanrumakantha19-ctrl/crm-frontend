@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, Download, Calendar, User, AlertCircle } from 'lucide-react';
 import { useCalendar } from '@/hooks/useCalendar';
 import { Avatar } from '@/components/shared/Avatar';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { NameTag } from '@/components/shared/NameTag';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { Modal } from '@/components/shared/Modal';
@@ -17,6 +18,7 @@ import { parseDurationHours, matchesStatusFilter } from '@/utils/attendanceFilte
 export default function AdminAttendance() {
   const [staffUsers, setStaffUsers] = useState<UserType[]>([]);
   const [apiRecords, setApiRecords] = useState<any[]>([]);
+  const [empApiRecords, setEmpApiRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const { role } = useAuth();
 
@@ -31,9 +33,29 @@ export default function AdminAttendance() {
   // Fetch staff users list once on mount
   useEffect(() => {
     userService.getAll({ role: 'staff', limit: 200 })
-      .then(r => setStaffUsers(r.data || []))
+      .then(r => {
+        const staff = r.data || [];
+        setStaffUsers(staff);
+        if (staff.length > 0) {
+          setSelectedStaffId(prev => prev || String(staff[0].id || (staff[0] as any)._id));
+        }
+      })
       .catch(() => {});
   }, []);
+
+  // Fetch employee-specific records across all months when selectedStaffId changes
+  useEffect(() => {
+    if (!selectedStaffId) return;
+    let isMounted = true;
+    attendanceService.getByStaff(selectedStaffId, { limit: 1000 })
+      .then(r => {
+        if (isMounted) setEmpApiRecords(r.data || []);
+      })
+      .catch(() => {
+        if (isMounted) setEmpApiRecords([]);
+      });
+    return () => { isMounted = false; };
+  }, [selectedStaffId]);
 
   // Fetch month-specific attendance records from backend whenever month or year changes
   useEffect(() => {
@@ -114,6 +136,9 @@ export default function AdminAttendance() {
       staffUsers.forEach(staff => {
         const sId = String(staff.id || (staff as any)._id);
         const key = `${sId}-${dateStr}`;
+        const joiningDateStr = (staff as any).joiningDate
+          ? new Date((staff as any).joiningDate).toISOString().split('T')[0]
+          : null;
 
         // 1. If real MongoDB attendance records exist for this staff + date, use ALL real DB records!
         if (apiMap.has(key) && apiMap.get(key)!.length > 0) {
@@ -127,7 +152,26 @@ export default function AdminAttendance() {
           return;
         }
 
-        // 2. Otherwise: Sunday is Weekly Off
+        // 2. If date is before staff joined the company -> Not Joined
+        if (joiningDateStr && dateStr < joiningDateStr) {
+          records.push({
+            id: `notjoined-${sId}-${dateStr}`,
+            staffId: sId,
+            staffName: staff.name,
+            role: staff.designation || 'Sales Executive',
+            date: dateStr,
+            status: 'Not Joined',
+            location: '—',
+            project: '—',
+            checkIn: '—',
+            checkOut: '—',
+            duration: '—',
+            activityType: '—',
+          });
+          return;
+        }
+
+        // 3. Otherwise: Sunday is Weekly Off
         if (dayOfWeek === 0) {
           records.push({
             id: `off-${sId}-${dateStr}`,
@@ -146,7 +190,7 @@ export default function AdminAttendance() {
           return;
         }
 
-        // 3. Future dates are Scheduled
+        // 4. Future dates are Scheduled
         if (isFuture) {
           records.push({
             id: `future-${sId}-${dateStr}`,
@@ -165,7 +209,7 @@ export default function AdminAttendance() {
           return;
         }
 
-        // 4. Past / Current working dates with NO DB record -> ABSENT
+        // 5. Past / Current working dates with NO DB record -> ABSENT
         records.push({
           id: `absent-${sId}-${dateStr}`,
           staffId: sId,
@@ -199,21 +243,30 @@ export default function AdminAttendance() {
     const realToday = new Date();
     realToday.setHours(23, 59, 59, 999);
 
-    // Map real API records for this employee
+    // Map real API records for this employee (combining calendar month records and employee-specific records)
     const apiMap = new Map<string, any[]>();
-    apiRecords.forEach(r => {
+    const combinedRecords = [...apiRecords, ...empApiRecords];
+    combinedRecords.forEach(r => {
       const recStaffId = String(r.staffId || r.userId || (r.user?.id || r.user));
       if (recStaffId === sId) {
         if (!apiMap.has(r.date)) apiMap.set(r.date, []);
-        apiMap.get(r.date)!.push({
-          ...r,
-          id: r.id || r._id,
-          staffId: sId,
-          staffName: staff.name,
-          role: staff.designation || 'Sales Executive',
-        });
+        const existing = apiMap.get(r.date)!;
+        const recId = String(r.id || r._id);
+        if (!existing.some(e => String(e.id || e._id) === recId)) {
+          existing.push({
+            ...r,
+            id: recId,
+            staffId: sId,
+            staffName: staff.name,
+            role: staff.designation || 'Sales Executive',
+          });
+        }
       }
     });
+
+    const joiningDateStr = (staff as any).joiningDate
+      ? new Date((staff as any).joiningDate).toISOString().split('T')[0]
+      : null;
 
     monthsToGenerate.forEach(m => {
       const daysInMonth = new Date(empYearFilter, m, 0).getDate();
@@ -225,6 +278,25 @@ export default function AdminAttendance() {
 
         if (apiMap.has(dateStr) && apiMap.get(dateStr)!.length > 0) {
           apiMap.get(dateStr)!.forEach(realRec => records.push(realRec));
+          continue;
+        }
+
+        // If date is before staff joined the company -> Not Joined
+        if (joiningDateStr && dateStr < joiningDateStr) {
+          records.push({
+            id: `notjoined-${sId}-${dateStr}`,
+            staffId: sId,
+            staffName: staff.name,
+            role: staff.designation || 'Sales Executive',
+            date: dateStr,
+            status: 'Not Joined',
+            location: '—',
+            project: '—',
+            checkIn: '—',
+            checkOut: '—',
+            duration: '—',
+            activityType: '—',
+          });
           continue;
         }
 
@@ -282,7 +354,7 @@ export default function AdminAttendance() {
     });
 
     return records;
-  }, [activeTab, selectedStaffId, empMonthFilter, empYearFilter, staffUsers, apiRecords]);
+  }, [activeTab, selectedStaffId, empMonthFilter, empYearFilter, staffUsers, apiRecords, empApiRecords]);
 
   useEffect(() => {
     setEmpPage(1);
@@ -329,8 +401,8 @@ export default function AdminAttendance() {
   const employeeStats = useMemo(() => {
     if (!selectedStaffId) return null;
     
-    // Filter actual recorded days (exclude Scheduled and Weekly Off)
-    const validRecs = generatedRecordsForEmployee.filter(r => r.status !== 'Scheduled' && r.status !== 'Weekly Off');
+    // Filter actual recorded days (exclude Scheduled, Weekly Off, and Not Joined)
+    const validRecs = generatedRecordsForEmployee.filter(r => r.status !== 'Scheduled' && r.status !== 'Weekly Off' && r.status !== 'Not Joined');
     const totalWorking = validRecs.length;
     const present = validRecs.filter(r => r.status === 'Present').length;
     const absent = validRecs.filter(r => r.status === 'Absent').length;
@@ -462,23 +534,90 @@ export default function AdminAttendance() {
           </button>
         </div>
 
-        {/* Calendar Nav (Visible when activeTab is date) */}
-        <div className="flex items-center gap-2">
+        {/* Calendar Nav & Export (Visible when activeTab is date) */}
+        <div className="flex flex-wrap items-center gap-2">
           {activeTab === 'date' && (
-            <>
-              <button onClick={prevMonth} className="p-2 border border-slate-200 bg-white rounded-md hover:bg-slate-50 text-slate-600 transition-colors">
+            <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
+              <button
+                onClick={prevMonth}
+                title="Previous Month"
+                className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600 transition-colors"
+                aria-label="Previous Month"
+              >
                 <ChevronLeft size={16} />
               </button>
-              <span className="text-sm font-semibold text-slate-800 min-w-[140px] text-center">{monthName}</span>
-              <button onClick={nextMonth} className="p-2 border border-slate-200 bg-white rounded-md hover:bg-slate-50 text-slate-600 transition-colors">
+              <select
+                aria-label="Select Month"
+                value={month}
+                onChange={e => setMonth(Number(e.target.value))}
+                className="text-xs font-semibold text-slate-700 bg-transparent border-none outline-none cursor-pointer py-1 px-1.5 hover:bg-slate-50 rounded"
+              >
+                <option value={1}>January</option>
+                <option value={2}>February</option>
+                <option value={3}>March</option>
+                <option value={4}>April</option>
+                <option value={5}>May</option>
+                <option value={6}>June</option>
+                <option value={7}>July</option>
+                <option value={8}>August</option>
+                <option value={9}>September</option>
+                <option value={10}>October</option>
+                <option value={11}>November</option>
+                <option value={12}>December</option>
+              </select>
+              <select
+                aria-label="Select Year"
+                value={year}
+                onChange={e => setYear(Number(e.target.value))}
+                className="text-xs font-semibold text-slate-700 bg-transparent border-none outline-none cursor-pointer py-1 px-1.5 hover:bg-slate-50 rounded"
+              >
+                <option value={2024}>2024</option>
+                <option value={2025}>2025</option>
+                <option value={2026}>2026</option>
+                <option value={2027}>2027</option>
+                <option value={2028}>2028</option>
+              </select>
+              <button
+                onClick={nextMonth}
+                title="Next Month"
+                className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600 transition-colors"
+                aria-label="Next Month"
+              >
                 <ChevronRight size={16} />
               </button>
-            </>
+            </div>
           )}
-          {role === 'admin' && (
-            <button onClick={() => { setExportInfo({ endpoint: '/export/attendance', filename: 'attendance', params: { tab: 'main', month: `${year}-${String(month).padStart(2, '0')}` } }); setTimeout(() => triggerDownload(), 50); }} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors ml-2">
-              <Download size={13} /> Export
-            </button>
+          {role === 'admin' && activeTab === 'date' && (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  setExportInfo({
+                    endpoint: '/export/attendance',
+                    filename: `attendance-${year}-${String(month).padStart(2, '0')}`,
+                    params: { tab: 'main', month: `${year}-${String(month).padStart(2, '0')}` },
+                  });
+                  setTimeout(() => triggerDownload(), 50);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors shadow-sm"
+                title={`Export full attendance for ${monthName}`}
+              >
+                <Download size={13} /> Export Month
+              </button>
+              <button
+                onClick={() => {
+                  setExportInfo({
+                    endpoint: '/export/attendance',
+                    filename: `attendance-${year}`,
+                    params: { tab: 'main', year: String(year) },
+                  });
+                  setTimeout(() => triggerDownload(), 50);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors shadow-sm"
+                title={`Export full attendance for year ${year}`}
+              >
+                <Download size={13} /> Export Year
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -503,8 +642,8 @@ export default function AdminAttendance() {
                 const activeRecs = dayRecs.filter(r => r.status === 'Present' || r.status === 'Half Day');
                 const presentCount = activeRecs.length;
                 const absentCount = dayRecs.filter(r => r.status === 'Absent').length;
-                const isOff = dayRecs.length > 0 && dayRecs[0].status === 'Weekly Off';
-                const isFuture = dayRecs.length > 0 && dayRecs[0].status === 'Scheduled';
+                const isAllOff = dayRecs.length > 0 && dayRecs.every(r => r.status === 'Weekly Off' || r.status === 'Not Joined');
+                const isAllFuture = dayRecs.length > 0 && dayRecs.every(r => r.status === 'Scheduled' || r.status === 'Weekly Off' || r.status === 'Not Joined');
 
                 return (
                   <button
@@ -526,15 +665,7 @@ export default function AdminAttendance() {
 
                     {day.isCurrentMonth && (
                       <div className="w-full mt-2 flex flex-col gap-1.5">
-                        {isOff ? (
-                          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded self-start">
-                            Weekly Off
-                          </span>
-                        ) : isFuture ? (
-                          <span className="text-[10px] font-medium text-slate-400 italic">
-                            Scheduled
-                          </span>
-                        ) : dayRecs.length > 0 ? (
+                        {presentCount > 0 ? (
                           <>
                             {/* Avatars */}
                             <div className="flex -space-x-1.5 overflow-hidden">
@@ -567,15 +698,31 @@ export default function AdminAttendance() {
                                 <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-extrabold border border-emerald-200/80">
                                   {presentCount} Present
                                 </span>
-                                <span className="text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded font-extrabold border border-rose-200/80">
-                                  {absentCount} Absent
-                                </span>
+                                {absentCount > 0 && (
+                                  <span className="text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded font-extrabold border border-rose-200/80">
+                                    {absentCount} Absent
+                                  </span>
+                                )}
                               </div>
                               {dayRecs.some(r => r.isLate) && (
                                 <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="Late entries present" />
                               )}
                             </div>
                           </>
+                        ) : isAllOff ? (
+                          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded self-start">
+                            Weekly Off
+                          </span>
+                        ) : isAllFuture ? (
+                          <span className="text-[10px] font-medium text-slate-400 italic">
+                            Scheduled
+                          </span>
+                        ) : dayRecs.length > 0 ? (
+                          <div className="flex items-center justify-between w-full text-[9px] font-bold mt-1 text-slate-500">
+                            <span className="text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded font-extrabold border border-rose-200/80">
+                              {absentCount} Absent
+                            </span>
+                          </div>
                         ) : null}
                       </div>
                     )}
@@ -646,6 +793,7 @@ export default function AdminAttendance() {
                 <option value="Below 4 Hours">Below 4 Hours</option>
                 <option value="Absent">Absent</option>
                 <option value="Weekly Off">Weekly Off</option>
+                <option value="Not Joined">Not Joined</option>
               </select>
             </div>
 
@@ -660,8 +808,41 @@ export default function AdminAttendance() {
                 <option value="2024">2024</option>
                 <option value="2025">2025</option>
                 <option value="2026">2026</option>
+                <option value="2027">2027</option>
+                <option value="2028">2028</option>
               </select>
             </div>
+
+            {/* Export Employee Log Button */}
+            {role === 'admin' && selectedStaffId && (
+              <button
+                onClick={() => {
+                  const staffObj = staffUsers.find(s => String(s.id || (s as any)._id) === String(selectedStaffId));
+                  const staffNameClean = (staffObj?.name || 'employee').replace(/[^a-zA-Z0-9]/g, '_');
+                  const params: Record<string, string> = {
+                    tab: 'main',
+                    staffId: selectedStaffId,
+                    year: String(empYearFilter),
+                  };
+                  let filename = `attendance-${staffNameClean}-${empYearFilter}`;
+                  if (empMonthFilter !== 'all') {
+                    const mStr = `${empYearFilter}-${String(empMonthFilter).padStart(2, '0')}`;
+                    params.month = mStr;
+                    filename = `attendance-${staffNameClean}-${mStr}`;
+                  }
+                  setExportInfo({
+                    endpoint: '/export/attendance',
+                    filename,
+                    params,
+                  });
+                  setTimeout(() => triggerDownload(), 50);
+                }}
+                className="w-full md:w-auto h-10 px-4 flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold shadow-sm transition-all whitespace-nowrap"
+                title="Export this employee's attendance log"
+              >
+                <Download size={14} /> Export Log
+              </button>
+            )}
           </div>
 
           {/* If No Employee Selected */}
@@ -769,48 +950,15 @@ export default function AdminAttendance() {
                 </div>
 
                 {/* Employee Tab React Pagination */}
-                {empTotalPages > 1 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border-t border-slate-100 bg-slate-50/50">
-                    <p className="text-xs text-slate-500 font-medium">
-                      Showing <span className="font-bold text-slate-800">{(empPage - 1) * empPerPage + 1}</span> to <span className="font-bold text-slate-800">{Math.min(empPage * empPerPage, filteredEmployeeRecords.length)}</span> of <span className="font-bold text-slate-800">{filteredEmployeeRecords.length}</span> attendance logs
-                    </p>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => setEmpPage(p => Math.max(1, p - 1))}
-                        disabled={empPage === 1}
-                        className="px-2.5 py-1 border border-slate-200 rounded text-xs font-semibold text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-30 transition-colors flex items-center gap-1"
-                      >
-                        <ChevronLeft size={13} /> Previous
-                      </button>
-                      {Array.from({ length: Math.min(5, empTotalPages) }, (_, idx) => {
-                        let pNum = idx + 1;
-                        if (empTotalPages > 5 && empPage > 3) {
-                          pNum = Math.min(empTotalPages, empPage - 2 + idx);
-                        }
-                        return (
-                          <button
-                            key={pNum}
-                            onClick={() => setEmpPage(pNum)}
-                            className={`w-7 h-7 rounded text-xs font-bold transition-all ${
-                              empPage === pNum
-                                ? 'bg-brand-blue text-white shadow-sm'
-                                : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                            }`}
-                          >
-                            {pNum}
-                          </button>
-                        );
-                      })}
-                      <button
-                        onClick={() => setEmpPage(p => Math.min(empTotalPages, p + 1))}
-                        disabled={empPage === empTotalPages}
-                        className="px-2.5 py-1 border border-slate-200 rounded text-xs font-semibold text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-30 transition-colors flex items-center gap-1"
-                      >
-                        Next <ChevronRight size={13} />
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <PaginationControls
+                  currentPage={empPage}
+                  totalPages={empTotalPages}
+                  onPageChange={setEmpPage}
+                  totalCount={filteredEmployeeRecords.length}
+                  perPage={empPerPage}
+                  itemName="attendance logs"
+                  className="border-t border-slate-100 rounded-none bg-slate-50/50"
+                />
               </div>
             </>
           )}
@@ -897,16 +1045,16 @@ export default function AdminAttendance() {
                         No records match the selected employee filter.
                       </td>
                     </tr>
-                  ) : filteredModalRecords[0].status === 'Weekly Off' ? (
-                    <tr>
-                      <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500 font-semibold bg-slate-50/50">
-                        Weekly Off (Sunday) — No attendance log recorded.
-                      </td>
-                    </tr>
-                  ) : filteredModalRecords[0].status === 'Scheduled' ? (
+                  ) : filteredModalRecords.every(r => r.status === 'Scheduled' || r.status === 'Not Joined') ? (
                     <tr>
                       <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-400 font-medium bg-slate-50/30">
                         Scheduled / Future Date — No attendance recorded yet.
+                      </td>
+                    </tr>
+                  ) : filteredModalRecords.every(r => r.status === 'Weekly Off' || r.status === 'Not Joined') ? (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500 font-semibold bg-slate-50/50">
+                        Weekly Off (Sunday) — No attendance log recorded.
                       </td>
                     </tr>
                   ) : (

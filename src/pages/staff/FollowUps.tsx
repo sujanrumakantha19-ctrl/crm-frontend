@@ -9,6 +9,7 @@ import { NameTag } from '@/components/shared/NameTag';
 import { Modal } from '@/components/shared/Modal';
 import { useAuth } from '@/context/AuthContext';
 import { getAvatarColor, getInitials } from '@/data/mockData';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { leadService } from '@/services';
 import { useExportContext } from '@/context/ExportContext';
 
@@ -20,7 +21,7 @@ export default function StaffFollowUps() {
 
   // Search & Debounce
   const [searchInput, setSearchInput] = useState('');
-  const debouncedSearch = useDebounce(searchInput, 1000);
+  const debouncedSearch = useDebounce(searchInput, 500);
   const { triggerDownload } = useExportContext();
 
   // Filters
@@ -276,7 +277,7 @@ export default function StaffFollowUps() {
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by customer name or phone number..."
+              placeholder="Search by ID, name, or phone number..."
               value={searchInput}
               onChange={e => setSearchInput(e.target.value)}
               className="w-full h-9 pl-9 pr-3 border border-slate-200 rounded-md bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand-green"
@@ -548,31 +549,14 @@ export default function StaffFollowUps() {
       )}
 
       {/* Backend-driven Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-2">
-          <p className="text-xs text-slate-500 font-medium">
-            Page <span className="font-semibold text-slate-900">{page}</span> of <span className="font-semibold text-slate-900">{totalPages}</span>
-            <span className="text-slate-400 ml-2">({total} total follow-ups)</span>
-          </p>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
+      <PaginationControls
+        currentPage={page}
+        totalPages={totalPages}
+        onPageChange={setPage}
+        totalCount={total}
+        perPage={PER_PAGE}
+        itemName="follow-ups"
+      />
     </div>
   );
 }

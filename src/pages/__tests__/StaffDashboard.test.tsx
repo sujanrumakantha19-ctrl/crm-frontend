@@ -5,9 +5,25 @@ import { leadService, taskService, activityLogService } from '@/services'
 
 // ─── Mock services ────────────────────────────────────────────────
 vi.mock('@/services', () => ({
-  leadService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  leadService: {
+    getAll: vi.fn().mockResolvedValue({ data: [] }),
+    getCounts: vi.fn().mockResolvedValue({ data: { All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 } }),
+  },
   taskService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  plotService: { getMyBookings: vi.fn().mockResolvedValue({ data: [] }) },
   activityLogService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  reportService: {
+    getOperationsMetrics: vi.fn().mockResolvedValue({
+      data: {
+        totalLoans: 0,
+        registrationPending: 0,
+        totalBookings: 0,
+        todaysRegistrations: 0,
+        pendingPaymentRegistrations: 0,
+        bookingPayments: { notPaid: 0, partiallyPaid: 0, advancePaid: 0, advanceNotPaid: 0 },
+      },
+    }),
+  },
 }))
 
 // ─── Mock AuthContext ──────────────────────────────────────────────
@@ -61,6 +77,9 @@ vi.mock('@/components/shared/StatusBadge', () => ({
 // ─── Helper: set mock data for services ───────────────────────────
 function mockServiceData(leads: any[], tasks: any[], activities: any[]) {
   vi.mocked(leadService.getAll).mockResolvedValue({ data: leads } as any)
+  vi.mocked(leadService.getCounts).mockResolvedValue({
+    data: { All: leads.length, Open: 0, Reserved: leads.filter((l: any) => l.status === 'Open').length, Qualified: leads.filter((l: any) => l.status === 'Qualified').length, Unqualified: 0, Customer: 0 },
+  } as any)
   vi.mocked(taskService.getAll).mockResolvedValue({ data: tasks } as any)
   vi.mocked(activityLogService.getAll).mockResolvedValue({ data: activities } as any)
 }
@@ -70,6 +89,9 @@ describe('Staff Dashboard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(leadService.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(leadService.getCounts).mockResolvedValue({
+      data: { All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 },
+    } as any)
     vi.mocked(taskService.getAll).mockResolvedValue({ data: [] } as any)
     vi.mocked(activityLogService.getAll).mockResolvedValue({ data: [] } as any)
   })
@@ -165,6 +187,9 @@ describe('Staff Dashboard — Scroll & Infinite Load', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(leadService.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(leadService.getCounts).mockResolvedValue({
+      data: { All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 },
+    } as any)
     vi.mocked(taskService.getAll).mockResolvedValue({ data: [] } as any)
     vi.mocked(activityLogService.getAll).mockResolvedValue({ data: [] } as any)
   })

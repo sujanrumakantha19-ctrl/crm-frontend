@@ -4,10 +4,12 @@ import { Users, ListChecks, Phone, Sun, FileCheck, CreditCard } from 'lucide-rea
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
 import { Timeline } from '@/components/shared/Timeline';
 import { StatusBadge } from '@/components/shared/StatusBadge';
-import { plotService, leadService, taskService, activityLogService } from '@/services';
+import { leadService, taskService, activityLogService, reportService } from '@/services';
+import type { OperationsMetricsData } from '@/services/report';
+import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
 import { useAuth } from '@/context/AuthContext';
 import { isTaskAssignedTo } from '@/lib/taskAssignee';
-import type { Lead, Task, ActivityLog, Plot } from '@/types';
+import type { Task, ActivityLog } from '@/types';
 import {
   ResponsiveContainer,
   BarChart,
@@ -52,57 +54,105 @@ function formatDateString(dateVal?: string): string {
   }
 }
 
+function formatLocalDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getWeekdayRange(): { start: string; end: string; days: Date[] } {
+  const now = new Date();
+  const monday = new Date(now);
+  const dayOfWeek = now.getDay();
+  const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  monday.setDate(now.getDate() + diff);
+  monday.setHours(0, 0, 0, 0);
+
+  const days: Date[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    days.push(d);
+  }
+
+  const friday = days[4];
+  return {
+    start: formatLocalDate(monday),
+    end: formatLocalDate(friday),
+    days,
+  };
+}
+
 export default function StaffDashboard() {
   const navigate = useNavigate();
   const { role, userId, user } = useAuth();
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [plots, setPlots] = useState<Plot[]>([]);
+  const [leadCounts, setLeadCounts] = useState({ All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 });
+  const [pendingTasksCount, setPendingTasksCount] = useState(0);
+  const [followUpsToday, setFollowUpsToday] = useState<Array<{
+    leadId: string;
+    followUpId?: string;
+    leadName: string;
+    phone?: string;
+    status?: string;
+    nextFollowUpDate?: string;
+    date?: string;
+  }>>([]);
+  const [weekTasks, setWeekTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
+  const [opsLoading, setOpsLoading] = useState(true);
 
-  // Today's Follow-ups Infinite Scroll state (client-side pagination over fetched leads)
   const [visibleFollowUpsCount, setVisibleFollowUpsCount] = useState(10);
 
-  // My Recent Activity Infinite Scroll state (server-side pagination)
   const [activityList, setActivityList] = useState<ActivityLog[]>([]);
   const [activityPage, setActivityPage] = useState(1);
   const [hasMoreActivity, setHasMoreActivity] = useState(true);
   const [activityLoading, setActivityLoading] = useState(false);
 
+  const weekRange = useMemo(() => getWeekdayRange(), []);
+
   useEffect(() => {
     if (!userId) { setLoading(false); return; }
     Promise.allSettled([
-      leadService.getAll({ assignedTo: userId, limit: 100 }).then(r => setLeads(r.data || [])).catch(() => {}),
-      taskService.getAll({ limit: 100 }).then(r => setTasks(r.data || [])).catch(() => {}),
-      plotService.getMyBookings({ limit: 1000 }).then(r => setPlots(r.data || [])).catch(() => {}),
+      leadService.getCounts({ assignedTo: userId }).then(r => {
+        const data = r.data || (r as unknown as typeof leadCounts);
+        setLeadCounts({
+          All: data.All ?? 0,
+          Open: data.Open ?? 0,
+          Reserved: data.Reserved ?? 0,
+          Qualified: data.Qualified ?? 0,
+          Unqualified: data.Unqualified ?? 0,
+          Customer: data.Customer ?? 0,
+        });
+      }).catch(() => {}),
+      taskService.getAll({ limit: 1, pendingOnly: 'true' }).then(r => {
+        setPendingTasksCount(r.total ?? 0);
+      }).catch(() => {}),
+      leadService.getFollowUps({ assignedTo: userId, date: 'today', limit: 100 }).then(r => {
+        setFollowUpsToday(r.data || []);
+      }).catch(() => {}),
+      taskService.getAll({
+        limit: 500,
+        dateFrom: weekRange.start,
+        dateTo: weekRange.end,
+      }).then(r => setWeekTasks(r.data || [])).catch(() => {}),
       activityLogService.getAll({ actorId: userId, limit: 10, page: 1, sort: '-timestamp' }).then(r => {
         setActivityList(r.data || []);
         const pagination = (r as { pagination?: { next?: unknown } }).pagination;
         setHasMoreActivity(!!(pagination && pagination.next));
       }).catch(() => {}),
-    ]).finally(() => setLoading(false));
-  }, [userId]);
+      reportService.getOperationsMetrics().then(r => {
+        setOpsMetrics(r.data || (r as unknown as OperationsMetricsData));
+      }).catch(() => {}),
+    ]).finally(() => {
+      setLoading(false);
+      setOpsLoading(false);
+    });
+  }, [userId, weekRange.start, weekRange.end]);
 
-  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const todayStr = useMemo(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), []);
 
-  const todaysRegistrationsCount = useMemo(() => {
-    return plots.filter(p => {
-      if (p.status !== 'Booked') return false;
-      if (!p.expectedRegistrationDate) return false;
-      const expDateStr = String(p.expectedRegistrationDate).split('T')[0];
-      return expDateStr === todayStr;
-    }).length;
-  }, [plots, todayStr]);
+  const todaysRegistrationsCount = opsMetrics?.todaysRegistrations ?? 0;
+  const pendingPaymentCustomersCount = opsMetrics?.pendingPaymentRegistrations ?? 0;
 
-  const pendingPaymentCustomersCount = useMemo(() => {
-    return plots.filter(p => {
-      if (p.status !== 'Registered') return false;
-      const pStatus = p.bookedBy?.paymentStatus || (p as any).paymentStatus || 'Not Paid';
-      return pStatus !== 'Fully Paid';
-    }).length;
-  }, [plots]);
-
-  // Ensure newest activity is strictly on top
   const sortedActivityList = useMemo(() => {
     return [...activityList].sort((a, b) => {
       const dateA = new Date(a.timestamp || (a as any).createdAt || 0).getTime();
@@ -115,56 +165,44 @@ export default function StaffDashboard() {
 
   const pipelineData = useMemo(() => {
     const statusColors: Record<string, string> = { Open: '#3B82F6', Qualified: '#10B981', Customer: '#8B5CF6', Unqualified: '#EF4444' };
-    return ['Open', 'Qualified', 'Customer', 'Unqualified'].map(stage => ({
-      stage,
-      count: leads.filter(l => l.status === stage).length,
-      color: statusColors[stage],
-    }));
-  }, [leads]);
+    return [
+      { stage: 'Assigned Open', count: leadCounts.Reserved, color: statusColors.Open },
+      { stage: 'Qualified', count: leadCounts.Qualified, color: statusColors.Qualified },
+      { stage: 'Customer', count: leadCounts.Customer, color: statusColors.Customer },
+      { stage: 'Unqualified', count: leadCounts.Unqualified, color: statusColors.Unqualified },
+    ];
+  }, [leadCounts]);
 
   const weeklyTasksData = useMemo(() => {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
-    startOfWeek.setHours(0, 0, 0, 0);
+    const myTasks = weekTasks.filter(t => isTaskAssignedTo(t.assignee, userId, currentUser.name));
 
-    const myTasks = tasks.filter(t => isTaskAssignedTo(t.assignee, userId, currentUser.name));
-    const result: { name: string; Completed: number; Assigned: number }[] = [];
-
-    for (let i = 0; i < 5; i++) {
-      const day = new Date(startOfWeek);
-      day.setDate(startOfWeek.getDate() + i);
-      const dayStr = day.toISOString().split('T')[0];
-      const dayTasks = myTasks.filter(t => t.dueDate?.startsWith(dayStr));
-      result.push({
+    return weekRange.days.map(day => {
+      const dayStr = formatLocalDate(day);
+      const dayTasks = myTasks.filter(t => {
+        const dueStr = t.dueDate ? String(t.dueDate).split('T')[0] : '';
+        return dueStr === dayStr;
+      });
+      return {
         name: days[day.getDay()],
         Completed: dayTasks.filter(t => t.status === 'Done').length,
-        Assigned: dayTasks.length,
-      });
-    }
-    return result;
-  }, [tasks, currentUser.name, userId]);
+        Assigned: dayTasks.filter(t => t.status !== 'Done').length + dayTasks.filter(t => t.status === 'Done').length,
+      };
+    });
+  }, [weekTasks, currentUser.name, userId, weekRange.days]);
 
   const today = new Date();
   const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 
-  const assignedLeadsCount = leads.length;
-  const pendingTasksCount = tasks.filter(t => isTaskAssignedTo(t.assignee, userId, currentUser.name) && t.status !== 'Done').length;
-  const activeLeadsCount = leads.filter(l => l.status === 'Open').length;
-
-  // Filter leads that are active (Open or Qualified) for follow-ups
-  const filteredFollowUps = useMemo(() => {
-    return leads.filter(l => l.status === 'Open' || l.status === 'Qualified');
-  }, [leads]);
+  const assignedLeadsCount = leadCounts.All;
+  const activeLeadsCount = leadCounts.Reserved;
 
   const displayedFollowUps = useMemo(() => {
-    return filteredFollowUps.slice(0, visibleFollowUpsCount);
-  }, [filteredFollowUps, visibleFollowUpsCount]);
+    return followUpsToday.slice(0, visibleFollowUpsCount);
+  }, [followUpsToday, visibleFollowUpsCount]);
 
-  const hasMoreFollowUps = filteredFollowUps.length > visibleFollowUpsCount;
+  const hasMoreFollowUps = followUpsToday.length > visibleFollowUpsCount;
 
-  // Scroll listener for Today's Follow-ups (client-side reveal)
   const handleFollowUpsScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 20 && hasMoreFollowUps) {
@@ -172,7 +210,6 @@ export default function StaffDashboard() {
     }
   };
 
-  // Fetch next page of activity logs from backend
   const fetchNextActivityPage = async () => {
     if (!userId || activityLoading || !hasMoreActivity) return;
     setActivityLoading(true);
@@ -195,7 +232,6 @@ export default function StaffDashboard() {
     }
   };
 
-  // Scroll listener for Recent Activity (server-side dynamic page load)
   const handleActivityScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 20 && hasMoreActivity && !activityLoading) {
@@ -207,7 +243,6 @@ export default function StaffDashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Welcome Banner */}
       <div className="bg-gradient-to-br from-blue-50 to-white rounded-xl border border-blue-100 p-4 sm:p-6">
         <div className="flex items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -228,9 +263,7 @@ export default function StaffDashboard() {
         </div>
       </div>
 
-      {/* Metric Cards — 2x3 compact grid on mobile, 5 columns on lg */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-4">
-        {/* Leads Assigned */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 sm:p-5 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight">Leads Assigned</p>
@@ -241,7 +274,6 @@ export default function StaffDashboard() {
           <p className="text-2xl sm:text-3xl font-bold text-slate-900">{assignedLeadsCount}</p>
         </div>
 
-        {/* Tasks Pending */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 sm:p-5 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight">Tasks Pending</p>
@@ -252,7 +284,6 @@ export default function StaffDashboard() {
           <p className="text-2xl sm:text-3xl font-bold text-slate-900">{pendingTasksCount}</p>
         </div>
 
-        {/* Active Leads */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 sm:p-5 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight">Active Leads</p>
@@ -263,7 +294,6 @@ export default function StaffDashboard() {
           <p className="text-2xl sm:text-3xl font-bold text-slate-900">{activeLeadsCount}</p>
         </div>
 
-        {/* Today's Registrations */}
         <button
           type="button"
           onClick={() => navigate(`/${role}/registrations?tab=upcoming&fromDate=${todayStr}&toDate=${todayStr}`)}
@@ -279,7 +309,6 @@ export default function StaffDashboard() {
           <span className="text-[10px] text-purple-600 font-semibold group-hover:underline">View Upcoming &rarr;</span>
         </button>
 
-        {/* Pending Payment Registrations */}
         <button
           type="button"
           onClick={() => navigate(`/${role}/registrations?tab=registered&paymentStatus=pending`)}
@@ -296,12 +325,20 @@ export default function StaffDashboard() {
         </button>
       </div>
 
-      {/* Charts Section */}
+      <div className="space-y-2">
+        <h2 className="text-sm font-bold text-slate-800">Operations Overview</h2>
+        <OperationsMetricsCards
+          metrics={opsMetrics}
+          loading={opsLoading}
+          role={role}
+          onNavigate={navigate}
+        />
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Pipeline stage */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
           <h2 className="text-sm sm:text-base font-semibold text-slate-900">Leads Pipeline Stage</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Total assigned leads at each stage</p>
+          <p className="text-xs text-slate-400 mt-0.5">Your assigned leads at each stage</p>
           <div className="h-40 sm:h-52 w-full text-[10px] mt-4">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={pipelineData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
@@ -319,10 +356,9 @@ export default function StaffDashboard() {
           </div>
         </div>
 
-        {/* Weekly tasks line chart */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
           <h2 className="text-sm sm:text-base font-semibold text-slate-900">Weekly Tasks Performance</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Completed vs assigned tasks this week</p>
+          <p className="text-xs text-slate-400 mt-0.5">Completed vs assigned tasks this week (Mon–Fri)</p>
           <div className="h-40 sm:h-52 w-full text-[10px] mt-4">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={weeklyTasksData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
@@ -340,22 +376,23 @@ export default function StaffDashboard() {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4">
-        {/* Today's Follow-ups */}
         <div className="flex-[1] bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 flex flex-col max-h-[320px] sm:h-[420px]">
           <h2 className="text-sm sm:text-lg font-semibold text-slate-900 mb-3">Today's Follow-ups</h2>
           <div
             onScroll={handleFollowUpsScroll}
             className="flex-1 overflow-y-auto pr-1 space-y-0"
           >
-            {displayedFollowUps.length === 0 && <p className="text-sm text-slate-400">No active leads</p>}
+            {displayedFollowUps.length === 0 && <p className="text-sm text-slate-400">No follow-ups scheduled for today</p>}
             {displayedFollowUps.map((f, i) => (
-              <div key={f.id || i} className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0">
+              <div key={f.leadId || f.followUpId || i} className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0">
                 <div>
-                  <p className="text-sm font-medium text-slate-800">{f.customerName}</p>
+                  <p className="text-sm font-medium text-slate-800">{f.leadName}</p>
                   <p className="text-xs text-slate-400">{f.phone}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">Added: {formatDateString(f.dateAdded || f.createdAt)}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Due: {formatDateString(f.nextFollowUpDate || f.date)}
+                  </p>
                 </div>
-                <StatusBadge status={f.status} />
+                <StatusBadge status={f.status || 'Open'} />
               </div>
             ))}
             {hasMoreFollowUps && (
@@ -367,7 +404,6 @@ export default function StaffDashboard() {
           </div>
         </div>
 
-        {/* Recent Activity */}
         <div className="flex-[1] bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 flex flex-col max-h-[320px] sm:h-[420px]">
           <h2 className="text-sm sm:text-lg font-semibold text-slate-900 mb-3">My Recent Activity</h2>
           <div

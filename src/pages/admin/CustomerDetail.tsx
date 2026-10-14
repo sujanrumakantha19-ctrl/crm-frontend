@@ -6,14 +6,101 @@ import { Avatar } from '@/components/shared/Avatar';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
 import { Modal } from '@/components/shared/Modal';
-import { leadService, projectService, plotService, taskService } from '@/services';
+import { leadService, projectService, plotService, taskService, userService } from '@/services';
 import { useAuth } from '@/context/AuthContext';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
 import { formatDate, formatSource } from '@/lib/utils';
+import {
+  formatBookingSelectLabel,
+  resolveProjectForPlot,
+  asEntityId,
+} from '@/lib/customerBookingRows';
 import { DetailSkeletonPage } from '@/components/shared/SkeletonLoader';
 import { FollowerAutocomplete } from '@/components/shared/FollowerAutocomplete';
 import type { Lead, Project, Plot } from '@/types';
+
+const isMongoHexId = (val?: any): boolean => {
+  if (!val) return false;
+  return typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val.trim());
+};
+
+interface ResolvedStaff {
+  name: string;
+  displayId?: string;
+}
+
+const resolveAssignedStaff = (
+  lead?: Lead | null,
+  plot?: Plot | null,
+  users?: { id: string; name: string; displayId?: string; role: string }[]
+): ResolvedStaff => {
+  let name = '';
+  let displayId = '';
+
+  // 1. Check plot bookedBy staff
+  const bStaffName = plot?.bookedBy?.staffName?.trim();
+  const bStaffDisplay = plot?.bookedBy?.staffDisplayId?.trim();
+  if (bStaffName && !isMongoHexId(bStaffName)) name = bStaffName;
+  if (bStaffDisplay && !isMongoHexId(bStaffDisplay)) displayId = bStaffDisplay;
+
+  // 2. Check plot assignedToName / assignedToDisplayId
+  const pAssignedName = (plot as any)?.assignedToName?.trim();
+  const pAssignedDisplay = (plot as any)?.assignedToDisplayId?.trim();
+  if (!name && pAssignedName && !isMongoHexId(pAssignedName)) name = pAssignedName;
+  if (!displayId && pAssignedDisplay && !isMongoHexId(pAssignedDisplay)) displayId = pAssignedDisplay;
+
+  // 3. Check lead assignedTo (if populated object)
+  if (lead?.assignedTo && typeof lead.assignedTo === 'object') {
+    const uObj = lead.assignedTo as any;
+    if (!name && uObj.name && !isMongoHexId(uObj.name)) name = uObj.name.trim();
+    if (!displayId && uObj.displayId && !isMongoHexId(uObj.displayId)) displayId = uObj.displayId.trim();
+  }
+
+  // 4. Check lead assignedToName / assignedToDisplayId
+  const lStaffName = lead?.assignedToName?.trim();
+  const lStaffDisplay = lead?.assignedToDisplayId?.trim();
+  if (!name && lStaffName && !isMongoHexId(lStaffName)) name = lStaffName;
+  if (!displayId && lStaffDisplay && !isMongoHexId(lStaffDisplay)) displayId = lStaffDisplay;
+
+  // 5. Check in users list by candidate IDs
+  const candidateIds = [
+    typeof lead?.assignedTo === 'string' ? lead.assignedTo : (lead?.assignedTo as any)?._id || (lead?.assignedTo as any)?.id,
+    plot?.assignedTo,
+    plot?.bookedBy?.staffId,
+    displayId,
+  ].filter(Boolean).map(id => String(id).trim());
+
+  if (users && users.length > 0) {
+    for (const cand of candidateIds) {
+      const found = users.find(u =>
+        String(u.id) === cand ||
+        (u.displayId && u.displayId.toUpperCase() === cand.toUpperCase())
+      );
+      if (found) {
+        if (!name && found.name && !isMongoHexId(found.name)) name = found.name.trim();
+        if (!displayId && found.displayId) displayId = found.displayId.trim();
+      }
+    }
+  }
+
+  // 6. If name still missing and displayId exists (e.g. STAFF-1), search in users
+  if (!name && displayId && users && users.length > 0) {
+    const found = users.find(u => u.displayId && u.displayId.toUpperCase() === displayId.toUpperCase());
+    if (found?.name && !isMongoHexId(found.name)) name = found.name.trim();
+  }
+
+  // 7. Fallback if raw assigned is non-hex and not a STAFF- ID
+  const rawAssigned = typeof lead?.assignedTo === 'string' ? lead.assignedTo.trim() : '';
+  if (!name && rawAssigned && !isMongoHexId(rawAssigned) && !rawAssigned.toUpperCase().startsWith('STAFF-')) {
+    name = rawAssigned;
+  }
+
+  if (isMongoHexId(name)) name = '';
+  if (isMongoHexId(displayId)) displayId = '';
+
+  return { name, displayId };
+};
 
 const LOAN_STAGES = [
   'Not Applied',
@@ -91,10 +178,12 @@ export default function AdminCustomerDetail() {
   const [lead, setLead] = useState<Lead | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [allPlots, setAllPlots] = useState<Plot[]>([]);
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string; displayId?: string; role: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [whatsAppOpen, setWhatsAppOpen] = useState(false);
 
   const followUpSectionRef = useRef<HTMLDivElement>(null);
+  const initializedIdRef = useRef<string | null>(null);
   const [highlightFollowUps, setHighlightFollowUps] = useState(false);
 
   useEffect(() => {
@@ -128,103 +217,194 @@ export default function AdminCustomerDetail() {
   };
 
   useEffect(() => {
-    if (!id) { setLoading(false); return; }
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setLead(null);
+    setSelectedPlotId('');
+    initializedIdRef.current = null;
+
     (async () => {
-      setLoading(true);
-      const [lRes, pRes, plRes] = await Promise.allSettled([
+      const searchParams = new URLSearchParams(window.location.search);
+      const plotIdFromQuery = searchParams.get('plotId') || '';
+      const phoneFromQuery = searchParams.get('phone') || '';
+      const tabFromQuery = searchParams.get('tab') || '';
+      const reqStatus = isRegistrationsView
+        ? (tabFromQuery === 'registered' ? 'Registered' : 'Booked')
+        : undefined;
+
+      const bookingParams: { leadId?: string; plotId?: string; phone?: string; status?: string } = {
+        leadId: id,
+        plotId: plotIdFromQuery || undefined,
+        phone: phoneFromQuery || undefined,
+        status: reqStatus,
+      };
+
+      const [lRes, pRes, bookingRes, plotRes, adminRes, staffRes] = await Promise.allSettled([
         leadService.getById(id),
         projectService.getAll({ limit: 200 }),
-        plotService.getAll({ limit: 1000 }),
+        plotService.getCustomerBookings(bookingParams),
+        plotIdFromQuery ? plotService.getById(plotIdFromQuery) : Promise.resolve({ data: null as any }),
+        userService.getAll({ role: 'admin', limit: 100 }),
+        userService.getAll({ role: 'staff', limit: 200 }),
       ]);
 
-      let fetchedLead: Lead | null = null;
-      if (lRes.status === 'fulfilled' && lRes.value?.data) {
-        fetchedLead = lRes.value.data as Lead;
-      }
+      const admins = adminRes.status === 'fulfilled' ? (adminRes.value.data || []).map((u: any) => ({
+        id: u.id || u._id,
+        name: u.name || '',
+        displayId: u.displayId || '',
+        role: 'admin',
+      })) : [];
+      const staff = staffRes.status === 'fulfilled' ? (staffRes.value.data || []).map((u: any) => ({
+        id: u.id || u._id,
+        name: u.name || '',
+        displayId: u.displayId || '',
+        role: 'staff',
+      })) : [];
+      const fetchedUsers = [...admins, ...staff];
 
       const fetchedProjects = pRes.status === 'fulfilled' ? (pRes.value.data || []) : [];
-      let fetchedPlots = plRes.status === 'fulfilled' ? (plRes.value.data || []) : [];
+      let fetchedLead: Lead | null =
+        lRes.status === 'fulfilled' && lRes.value?.data ? (lRes.value.data as Lead) : null;
+      let bookings: Plot[] = bookingRes.status === 'fulfilled' ? (bookingRes.value.data || []) : [];
+      const singlePlot = plotRes.status === 'fulfilled' && plotRes.value?.data ? (plotRes.value.data as Plot) : null;
 
-      setProjects(fetchedProjects);
-      setAllPlots(fetchedPlots);
+      const mergePlot = (plot: Plot) => {
+        const sid = asEntityId(plot.id || (plot as { _id?: string })._id);
+        if (!sid) return;
+        if (!bookings.some((p) => asEntityId(p.id || (p as { _id?: string })._id) === sid)) {
+          bookings = [...bookings, plot];
+        }
+      };
 
-      // If direct lead lookup failed or returned null (e.g. id is a Plot ID or unlinked lead)
+      if (singlePlot) mergePlot(singlePlot);
+
+      const tryLeadId = (raw?: unknown) => asEntityId(raw);
       if (!fetchedLead) {
-        let matchingPlot = fetchedPlots.find((p: any) => String(p.id || p._id) === String(id));
-        if (!matchingPlot) {
+        const fromPlot = bookings[0] || singlePlot;
+        const bLeadId = tryLeadId(
+          (fromPlot as { bookedBy?: { leadId?: string }; leadId?: string } | null)?.bookedBy?.leadId
+            || (fromPlot as { leadId?: string } | null)?.leadId
+        );
+        if (bLeadId && bLeadId !== id) {
           try {
-            const plotSingleRes = await plotService.getById(id);
-            if (plotSingleRes?.data) {
-              matchingPlot = plotSingleRes.data as any;
-              fetchedPlots = [...fetchedPlots, matchingPlot];
-            }
+            const bRes = await leadService.getById(bLeadId);
+            if (bRes?.data) fetchedLead = bRes.data as Lead;
           } catch {
             // ignore
           }
         }
+      }
 
-        if (matchingPlot) {
-          const bLeadId = (matchingPlot as any).bookedBy?.leadId || (matchingPlot as any).leadId;
-          if (bLeadId) {
-            try {
-              const bRes = await leadService.getById(bLeadId);
-              if (bRes?.data) fetchedLead = bRes.data as Lead;
-            } catch {
-              // ignore
-            }
-          }
-
-          if (!fetchedLead && matchingPlot.bookedBy?.phone) {
-            try {
-              const phoneClean = matchingPlot.bookedBy.phone.replace(/\D/g, '').slice(-10);
-              const allLeadsRes = await leadService.getAll({ limit: 500 });
-              const matchedLead = (allLeadsRes.data || []).find((l: any) =>
-                l.phone && l.phone.replace(/\D/g, '').slice(-10) === phoneClean
-              );
-              if (matchedLead) fetchedLead = matchedLead as Lead;
-            } catch {
-              // ignore
-            }
-          }
-
-          if (!fetchedLead && matchingPlot.bookedBy) {
-            // Try to find lead by phone from the already-fetched list
-            const phoneClean = matchingPlot.bookedBy.phone.replace(/\D/g, '').slice(-10);
-            const matchedLead = fetchedPlots.find((l: any) =>
-              l.phone && l.phone.replace(/\D/g, '').slice(-10) === phoneClean
-            );
-            if (matchedLead) fetchedLead = matchedLead as Lead;
-            // Intentionally do NOT fabricate a lead from plot data: a fake lead
-            // with a plot ID as its lead ID and plot statuses as lead statuses
-            // would cause API failures on any subsequent lead operation.
-          }
+      if (fetchedLead?.phone || phoneFromQuery || fetchedLead) {
+        try {
+          const more = await plotService.getCustomerBookings({
+            leadId: asEntityId(fetchedLead?.id || (fetchedLead as { _id?: string } | null)?._id) || id,
+            phone: fetchedLead?.phone || phoneFromQuery || undefined,
+            plotId: plotIdFromQuery || undefined,
+            status: reqStatus,
+          });
+          (more.data || []).forEach(mergePlot);
+        } catch {
+          // ignore
         }
       }
 
+      if (!fetchedLead) {
+        const fromPlot = bookings[0] || singlePlot;
+        if (fromPlot?.bookedBy) {
+          fetchedLead = {
+            id: tryLeadId(fromPlot.bookedBy.leadId) || asEntityId(fromPlot.id || (fromPlot as { _id?: string })._id),
+            customerName: fromPlot.bookedBy.name,
+            phone: fromPlot.bookedBy.phone,
+            paymentMethod: fromPlot.bookedBy.paymentMethod,
+            paymentStatus: fromPlot.bookedBy.paymentStatus,
+            loanStage: fromPlot.bookedBy.loanStage,
+            bank: fromPlot.bookedBy.bank,
+            bankFollowerName: fromPlot.bookedBy.bankFollowerName,
+            bankFollowerPhone: fromPlot.bookedBy.bankFollowerPhone,
+            status: 'Customer',
+          } as Lead;
+        }
+      }
+
+      if (cancelled) return;
       setProjects(fetchedProjects);
-      setAllPlots(fetchedPlots);
+      setAllPlots(bookings);
+      setAllUsers(fetchedUsers);
       setLead(fetchedLead);
       setLoading(false);
     })();
-  }, [id]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, location.search]);
 
   // Find all plots booked by this customer (match by direct plotId link, plot id, name, or trailing 10-digit phone)
   const customerPlots = useMemo(() => {
+    const tabParam = new URLSearchParams(location.search).get('tab');
+    const seen = new Set<string>();
+    let fromBookings = allPlots.filter((p) => {
+      const pid = asEntityId(p.id || (p as { _id?: string })._id);
+      if (!pid || seen.has(pid)) return false;
+      if (isRegistrationsView) {
+        if (tabParam === 'registered') {
+          if (p.status !== 'Registered') return false;
+        } else {
+          if (!['Booked', 'Pending'].includes(p.status)) return false;
+        }
+      } else {
+        if (!['Booked', 'Registered', 'Pending'].includes(p.status)) return false;
+      }
+      seen.add(pid);
+      return true;
+    });
+
+    fromBookings.sort((a, b) => {
+      const pa = resolveProjectForPlot(a, projects);
+      const pb = resolveProjectForPlot(b, projects);
+      const na = pa?.name || '';
+      const nb = pb?.name || '';
+      if (na !== nb) return na.localeCompare(nb);
+      return String(a.plotNumber).localeCompare(String(b.plotNumber), undefined, { numeric: true });
+    });
+
+    if (fromBookings.length > 0) return fromBookings;
     if (!lead) return [];
+
     const directPlotId = typeof lead.plotId === 'object' ? (lead.plotId as any)?._id || (lead.plotId as any)?.id : lead.plotId;
+    const fromPlotIds = (lead.plotIds || []).map((pid: any) =>
+      String(typeof pid === 'object' ? pid._id || pid.id : pid)
+    ).filter(Boolean);
+    const plotIdSet = new Set<string>(fromPlotIds);
+    if (directPlotId) plotIdSet.add(String(directPlotId));
     const leadPhone10 = lead.phone ? lead.phone.replace(/\D/g, '').slice(-10) : '';
     const leadName = lead.customerName ? lead.customerName.toLowerCase().trim() : '';
 
     return allPlots.filter(p => {
+      if (isRegistrationsView) {
+        if (tabParam === 'registered') {
+          if (p.status !== 'Registered') return false;
+        } else {
+          if (!['Booked', 'Pending'].includes(p.status)) return false;
+        }
+      } else {
+        if (!['Booked', 'Registered', 'Pending'].includes(p.status)) return false;
+      }
       const pId = p.id || (p as any)._id;
       if (String(pId) === String(id)) return true;
+      if (plotIdSet.has(String(pId))) return true;
       if (directPlotId && String(pId) === String(directPlotId)) return true;
-      const nameMatch = Boolean(p.bookedBy?.name && leadName && p.bookedBy.name.toLowerCase().trim() === leadName);
       const pPhone10 = p.bookedBy?.phone ? p.bookedBy.phone.replace(/\D/g, '').slice(-10) : '';
       const phoneMatch = Boolean(pPhone10 && leadPhone10 && pPhone10 === leadPhone10);
-      return nameMatch || phoneMatch;
+      const nameMatch = Boolean(!leadPhone10 && p.bookedBy?.name && leadName && p.bookedBy.name.toLowerCase().trim() === leadName);
+      return phoneMatch || nameMatch;
     });
-  }, [allPlots, lead, id]);
+  }, [allPlots, lead, id, location.search, isRegistrationsView, projects]);
 
   // Group plots by project
   const plotsByProject = useMemo(() => {
@@ -244,39 +424,60 @@ export default function AdminCustomerDetail() {
       if (!project && plots[0] && typeof plots[0].projectId === 'object' && plots[0].projectId !== null) {
         project = plots[0].projectId as any;
       }
-      if (project) grouped.push({ project, plots });
+      if (!project) {
+        project = {
+          id: pid,
+          name: 'Project',
+          displayId: '',
+          location: '',
+          status: 'Active',
+        } as Project;
+      }
+      grouped.push({ project, plots });
     });
     return grouped;
   }, [customerPlots, projects]);
 
-  const [selectedPlotId, setSelectedPlotId] = useState<string>('all');
+  const [selectedPlotId, setSelectedPlotId] = useState<string>('');
 
   const activeSelectedPlot = useMemo(() => {
-    if (selectedPlotId === 'all' || !selectedPlotId) return null;
-    return customerPlots.find(p => (p.id || (p as any)._id) === selectedPlotId) || null;
+    if (!selectedPlotId) return null;
+    return customerPlots.find((p) => String(p.id || (p as any)._id) === String(selectedPlotId)) || null;
   }, [customerPlots, selectedPlotId]);
 
-  const initializedIdRef = useRef<string | null>(null);
-
   useEffect(() => {
-    if (id && initializedIdRef.current !== id && customerPlots.length > 0) {
-      if (customerPlots.some(p => String(p.id || (p as any)._id) === String(id))) {
-        setSelectedPlotId(id);
-        initializedIdRef.current = id;
-      }
+    if (customerPlots.length === 0) return;
+
+    const params = new URLSearchParams(location.search);
+    const plotFromQuery = params.get('plotId');
+
+    const hasPlot = (plotId: string) =>
+      customerPlots.some((p) => String(p.id || (p as any)._id) === String(plotId));
+
+    if (plotFromQuery && hasPlot(plotFromQuery)) {
+      setSelectedPlotId(plotFromQuery);
+      initializedIdRef.current = id || null;
+      return;
     }
-  }, [customerPlots, id]);
+    if (id && hasPlot(id)) {
+      setSelectedPlotId(String(id));
+      initializedIdRef.current = id;
+      return;
+    }
+    if (!selectedPlotId || !hasPlot(selectedPlotId)) {
+      const first = customerPlots[0];
+      setSelectedPlotId(String(first.id || (first as any)._id));
+    }
+  }, [customerPlots, id, location.search]);
 
   const showBankFollowerInDetail = useMemo(() => {
-    if (selectedPlotId === 'all') return false;
-    const pMethod = activeSelectedPlot ? (activeSelectedPlot.bookedBy?.paymentMethod || lead?.paymentMethod || 'CASH') : (lead?.paymentMethod || 'CASH');
+    if (!activeSelectedPlot) return false;
+    const pMethod =
+      activeSelectedPlot.bookedBy?.paymentMethod || lead?.paymentMethod || 'CASH';
     return pMethod === 'LOAN';
-  }, [selectedPlotId, activeSelectedPlot, lead]);
+  }, [activeSelectedPlot, lead]);
 
-  const showPaymentMethodInDetail = useMemo(() => {
-    if (selectedPlotId === 'all') return false;
-    return true;
-  }, [selectedPlotId]);
+  const showPaymentMethodInDetail = useMemo(() => Boolean(activeSelectedPlot), [activeSelectedPlot]);
 
   const isUpcomingView = useMemo(() => {
     return location.search.includes('tab=upcoming') || (activeSelectedPlot && activeSelectedPlot.status !== 'Registered');
@@ -321,10 +522,12 @@ export default function AdminCustomerDetail() {
   }, [activeSelectedPlot, customerPlots, lead]);
 
   const filteredPlotsByProject = useMemo(() => {
-    if (selectedPlotId === 'all') return plotsByProject;
+    if (!selectedPlotId) return [];
     const result: { project: Project; plots: Plot[] }[] = [];
-    plotsByProject.forEach(group => {
-      const matching = group.plots.filter(p => (p.id || (p as any)._id) === selectedPlotId);
+    plotsByProject.forEach((group) => {
+      const matching = group.plots.filter(
+        (p) => String(p.id || (p as any)._id) === String(selectedPlotId)
+      );
       if (matching.length > 0) {
         result.push({ project: group.project, plots: matching });
       }
@@ -340,6 +543,7 @@ export default function AdminCustomerDetail() {
   const [editBankFollowerPhone, setEditBankFollowerPhone] = useState('');
   const [editLoanStage, setEditLoanStage] = useState('Not Applied');
   const [editExpectedRegistrationDate, setEditExpectedRegistrationDate] = useState('');
+  const [editRegistrationDate, setEditRegistrationDate] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Auto-complete datalists for Bank & Follower
@@ -398,6 +602,7 @@ export default function AdminCustomerDetail() {
     setEditBankFollowerPhone(activeSelectedPlot.bookedBy?.bankFollowerPhone ?? '');
     setEditLoanStage(activeSelectedPlot.bookedBy?.loanStage || lead?.loanStage || 'Not Applied');
     setEditExpectedRegistrationDate(activeSelectedPlot.expectedRegistrationDate ? String(activeSelectedPlot.expectedRegistrationDate).split('T')[0] : '');
+    setEditRegistrationDate(activeSelectedPlot.registrationDate ? String(activeSelectedPlot.registrationDate).split('T')[0] : '');
     setEditModalOpen(true);
   };
 
@@ -427,10 +632,13 @@ export default function AdminCustomerDetail() {
     setSaving(true);
     try {
       const plotId = activeSelectedPlot.id || (activeSelectedPlot as any)._id;
-      // 1. Update plot
+      const willRegister = activeSelectedPlot.status === 'Booked' && !!editRegistrationDate;
+      const updateRegistrationDate = willRegister
+        || (activeSelectedPlot.status === 'Registered' && !!editRegistrationDate);
       await plotService.update(plotId, {
         ...activeSelectedPlot,
         expectedRegistrationDate: editExpectedRegistrationDate,
+        ...(updateRegistrationDate ? { registrationDate: editRegistrationDate } : {}),
         bookedBy: {
           ...activeSelectedPlot.bookedBy,
           paymentStatus: editPaymentStatus,
@@ -440,6 +648,13 @@ export default function AdminCustomerDetail() {
           loanStage: editLoanStage,
         },
       } as any);
+
+      if (willRegister) {
+        await plotService.registerPlot(plotId, {
+          registrationDate: editRegistrationDate,
+          paymentStatus: editPaymentStatus,
+        }).catch(() => {});
+      }
 
       // 2. Update lead profile
       await leadService.update(lead.id || (lead as any)._id, {
@@ -451,15 +666,19 @@ export default function AdminCustomerDetail() {
         expectedRegistrationDate: editExpectedRegistrationDate,
       } as any);
 
-      toast.success('Booking updated successfully');
+      toast.success(willRegister ? 'This plot moved to Registered. Any other bookings stay in Upcoming.' : 'Booking updated successfully');
       setEditModalOpen(false);
 
-      const [lRes, plRes] = await Promise.allSettled([
+      const [lRes, bookingRes] = await Promise.allSettled([
         leadService.getById(id!),
-        plotService.getAll({ limit: 1000 }),
+        plotService.getCustomerBookings({
+          leadId: asEntityId(lead.id || (lead as { _id?: string })._id) || id,
+          plotId,
+          phone: lead.phone || undefined,
+        }),
       ]);
       if (lRes.status === 'fulfilled') setLead(lRes.value.data as Lead);
-      if (plRes.status === 'fulfilled') setAllPlots(plRes.value.data || []);
+      if (bookingRes.status === 'fulfilled') setAllPlots(bookingRes.value.data || []);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update booking');
     } finally {
@@ -581,14 +800,18 @@ export default function AdminCustomerDetail() {
       ];
 
       await Promise.allSettled(tasksToCreate.map(t => taskService.create(t)));
-      toast.success('Plot registered successfully! 4 post-registration tasks created.');
+      toast.success('This plot is registered. Other bookings for this customer stay in Upcoming.');
       setConfirmRegModalOpen(false);
-      const [lRes, plRes] = await Promise.allSettled([
+      const [lRes, bookingRes] = await Promise.allSettled([
         leadService.getById(id!),
-        plotService.getAll({ limit: 1000 }),
+        plotService.getCustomerBookings({
+          leadId: asEntityId(lead.id || (lead as { _id?: string })._id) || id,
+          plotId: asEntityId(activeSelectedPlot.id || (activeSelectedPlot as { _id?: string })._id) || undefined,
+          phone: lead.phone || undefined,
+        }),
       ]);
       if (lRes.status === 'fulfilled') setLead(lRes.value.data as Lead);
-      if (plRes.status === 'fulfilled') setAllPlots(plRes.value.data || []);
+      if (bookingRes.status === 'fulfilled') setAllPlots(bookingRes.value.data || []);
     } catch (err: any) {
       toast.error(err.message || 'Failed to register plot');
     } finally {
@@ -602,14 +825,13 @@ export default function AdminCustomerDetail() {
     if (!lead) return [];
     const items: any[] = [];
 
-    // Plot timeline events
-    const plotsToInclude = selectedPlotId === 'all'
-      ? customerPlots
-      : customerPlots.filter(p => (p.id || (p as any)._id) === selectedPlotId);
+    const plotsToInclude = selectedPlotId
+      ? customerPlots.filter((p) => String(p.id || (p as any)._id) === String(selectedPlotId))
+      : [];
 
-    plotsToInclude.forEach(p => {
-      const proj = projects.find(pr => (pr.id || (pr as any)._id) === p.projectId);
-      const projName = proj ? `${proj.name} [${proj.displayId}]` : 'Project';
+    plotsToInclude.forEach((p) => {
+      const proj = resolveProjectForPlot(p, projects);
+      const projName = proj ? `${proj.name} [${proj.displayId || ''}]` : 'Project';
       (p.timeline || []).forEach((t, tIdx) => {
         items.push({
           id: t.id || (t as any)._id || `pt-${p.plotNumber}-${tIdx}`,
@@ -642,27 +864,13 @@ export default function AdminCustomerDetail() {
     if (!lead) return [];
     const items: any[] = [];
 
-    // 1. Initial Payment Setup Event (show when all properties selected)
-    if (selectedPlotId === 'all') {
-      const createdDate = lead.dateAdded || (lead as any).createdAt || (lead as any).date;
-      const isLoan = (lead.paymentMethod || 'CASH') === 'LOAN';
-      items.push({
-        id: 'pay-init',
-        title: `Payment Mode Configured: ${lead.paymentMethod || 'CASH'}`,
-        subtitle: `Initial Status: ${lead.paymentStatus || 'Not Paid'}${isLoan && lead.bank ? ` • Bank: ${lead.bank}` : ''}${isLoan && lead.bankFollowerName ? ` • Follower: ${lead.bankFollowerName}` : ''}`,
-        color: 'bg-blue-500',
-        rawDate: new Date(createdDate || Date.now()),
-      });
-    }
+    const plotsToInclude = selectedPlotId
+      ? customerPlots.filter((p) => String(p.id || (p as any)._id) === String(selectedPlotId))
+      : [];
 
-    // 2. Plot Payment Events matching selected plot
-    const plotsToInclude = selectedPlotId === 'all'
-      ? customerPlots
-      : customerPlots.filter(p => (p.id || (p as any)._id) === selectedPlotId);
-
-    plotsToInclude.forEach(p => {
-      const proj = projects.find(pr => (pr.id || (pr as any)._id) === p.projectId);
-      const projName = proj ? `${proj.name} [${proj.displayId}]` : 'Project';
+    plotsToInclude.forEach((p) => {
+      const proj = resolveProjectForPlot(p, projects);
+      const projName = proj ? `${proj.name} [${proj.displayId || ''}]` : 'Project';
       
       if (p.bookedBy?.paymentStatus) {
         items.push({
@@ -777,6 +985,10 @@ export default function AdminCustomerDetail() {
     }
   };
 
+  if (loading) {
+    return <DetailSkeletonPage />;
+  }
+
   if (!lead) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-10 text-center">
@@ -798,7 +1010,7 @@ export default function AdminCustomerDetail() {
   const isUpcomingTab = tabQuery === 'upcoming' || (!isRegisteredTab && (activeSelectedPlot?.status === 'Booked' || (isRegistrationsView && activeSelectedPlot?.status !== 'Registered')));
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 max-w-full overflow-x-hidden">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-xs">
         <div className="flex items-center gap-3">
@@ -826,43 +1038,51 @@ export default function AdminCustomerDetail() {
         </div>
 
         {customerPlots.length > 0 && (
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-2.5 bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full sm:w-auto">
+            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-xs min-w-0 w-full sm:w-auto">
               <Building2 size={16} className="text-brand-blue shrink-0" />
-              <span className="text-xs font-bold text-slate-700 whitespace-nowrap">Property / Plot:</span>
+              <span className="text-xs font-bold text-slate-700 whitespace-nowrap shrink-0">
+                {customerPlots.length > 1 ? 'Project & Plot:' : 'Booking:'}
+              </span>
               <select
                 value={selectedPlotId}
-                onChange={e => setSelectedPlotId(e.target.value)}
-                className="h-8 px-2.5 border border-slate-200 rounded-lg text-xs font-bold bg-slate-50 text-slate-800 outline-none focus:border-brand-green cursor-pointer shadow-2xs"
+                onChange={(e) => setSelectedPlotId(e.target.value)}
+                className="h-8 min-w-0 flex-1 sm:min-w-[200px] sm:max-w-[360px] px-2.5 border border-slate-200 rounded-lg text-xs font-bold bg-slate-50 text-slate-800 outline-none focus:border-brand-green cursor-pointer shadow-2xs truncate"
               >
-                <option value="all">All Properties / Lead Profile ({customerPlots.length})</option>
-                {customerPlots.map(p => {
-                  const proj = projects.find(pr => (pr.id || (pr as any)._id) === p.projectId);
+                {customerPlots.map((p) => {
+                  const plotKey = String(p.id || (p as any)._id);
+                  const proj = resolveProjectForPlot(p, projects);
+                  const label = formatBookingSelectLabel(
+                    proj?.name || 'Project',
+                    proj?.displayId,
+                    p.plotNumber
+                  );
                   return (
-                    <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>
-                      {proj ? `${proj.name} [${proj.displayId}]` : 'Project'} — Plot #{p.plotNumber}
+                    <option key={plotKey} value={plotKey}>
+                      {label}
                     </option>
                   );
                 })}
               </select>
             </div>
 
-            {/* Show Edit + Confirm Register ONLY when on Upcoming Tab or non-registered plot */}
-            {selectedPlotId !== 'all' && isUpcomingTab && activeSelectedPlot && activeSelectedPlot.status !== 'Registered' && (
-              <div className="flex items-center gap-2">
+            {selectedPlotId && activeSelectedPlot && (
+              <div className="flex items-center gap-2 shrink-0 justify-end sm:justify-start">
                 <button
+                  type="button"
                   onClick={handleOpenEditModal}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold text-slate-700 hover:bg-brand-green hover:text-white hover:border-brand-green shadow-xs transition-all cursor-pointer"
+                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold text-slate-700 hover:bg-brand-green hover:text-white hover:border-brand-green shadow-xs transition-all cursor-pointer"
                 >
-                  <Pencil size={13} /> Edit Booking
+                  <Pencil size={13} /> Edit
                 </button>
-                {role !== 'staff' && (
+                {activeSelectedPlot.status === 'Booked' && role !== 'staff' && (
                   <button
+                    type="button"
                     onClick={() => {
                       setConfirmRegDate(new Date().toISOString().split('T')[0]);
                       setConfirmRegModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 border border-blue-200 bg-blue-50 rounded-xl text-xs font-bold text-blue-700 hover:bg-blue-600 hover:text-white hover:border-blue-600 shadow-xs transition-all cursor-pointer"
+                    className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 border border-blue-200 bg-blue-50 rounded-xl text-xs font-bold text-blue-700 hover:bg-blue-600 hover:text-white hover:border-blue-600 shadow-xs transition-all cursor-pointer whitespace-nowrap"
                   >
                     <FileCheck size={13} /> Confirm Register
                   </button>
@@ -874,15 +1094,15 @@ export default function AdminCustomerDetail() {
       </div>
 
       {/* Customer Info Card */}
-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
-        <div className="flex items-start gap-4">
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 sm:p-6 min-w-0 overflow-hidden">
+        <div className="flex items-start gap-3 sm:gap-4">
           <Avatar initials={getInitials(lead.customerName)} size="lg" bg={getAvatarColor(lead.customerName)} />
-          <div className="flex-1">
-            <h2 className="text-lg font-bold text-slate-900"><NameTag name={lead.customerName} displayId={lead.displayId} /></h2>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-bold text-slate-900 break-words"><NameTag name={lead.customerName} displayId={lead.displayId} /></h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
-              <div className="flex items-center gap-1.5 text-sm text-slate-600">
-                <Phone size={14} className="text-slate-400" />
-                {lead.phone}
+              <div className="flex items-center gap-1.5 text-sm text-slate-600 truncate">
+                <Phone size={14} className="text-slate-400 shrink-0" />
+                <span className="truncate">{lead.phone}</span>
                 <button
                   type="button"
                   onClick={() => setWhatsAppOpen(true)}
@@ -895,27 +1115,45 @@ export default function AdminCustomerDetail() {
                 </button>
               </div>
 
-              <div className="flex items-center gap-2 text-sm text-slate-600"><Mail size={14} className="text-slate-400" />{lead.email || '—'}</div>
-              <div className="flex items-center gap-2 text-sm text-slate-600"><MapPin size={14} className="text-slate-400" />{lead.city || '—'}</div>
-              {lead.dob && <div className="flex items-center gap-2 text-sm text-slate-600"><Calendar size={14} className="text-slate-400" />DOB: {formatDate(lead.dob)}</div>}
+              <div className="flex items-center gap-2 text-sm text-slate-600 truncate"><Mail size={14} className="text-slate-400 shrink-0" /><span className="truncate">{lead.email || '—'}</span></div>
+              <div className="flex items-center gap-2 text-sm text-slate-600 truncate"><MapPin size={14} className="text-slate-400 shrink-0" /><span className="truncate">{lead.city || '—'}</span></div>
+              {lead.dob && <div className="flex items-center gap-2 text-sm text-slate-600"><Calendar size={14} className="text-slate-400 shrink-0" />DOB: {formatDate(lead.dob)}</div>}
             </div>
           </div>
           <StatusBadge status={lead.status} />
         </div>
 
         {/* Loan Details Grid matching active selected plot or lead */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-5 border-t border-slate-100">
-          <div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-5 border-t border-slate-100 min-w-0">
+          <div className="min-w-0">
             <p className="text-xs text-slate-400 font-medium uppercase">Location &amp; Source</p>
-            <p className="text-sm font-semibold text-slate-800 mt-0.5">{lead.city ? `${lead.city} • ` : ''}{formatSource(lead.sourceType, lead.source)}</p>
+            <p className="text-sm font-semibold text-slate-800 mt-0.5 break-words">{lead.city ? `${lead.city} • ` : ''}{formatSource(lead.sourceType, lead.source)}</p>
           </div>
 
-          {selectedPlotId !== 'all' && (
-            <div>
-              <p className="text-xs text-slate-400 font-medium uppercase">Assigned To</p>
-              <p className="text-sm font-semibold text-slate-800 mt-0.5">{activeSelectedPlot?.assignedTo || lead.assignedToDisplayId || lead.assignedToName || '—'}</p>
-            </div>
-          )}
+          <div>
+            <p className="text-xs text-slate-400 font-medium uppercase">Assigned To</p>
+            {(() => {
+              const assigned = resolveAssignedStaff(lead, activeSelectedPlot, allUsers);
+              return (
+                <div className="mt-0.5">
+                  {assigned.name ? (
+                    <p className="text-sm font-bold text-slate-900">
+                      {assigned.name}
+                      {assigned.displayId && (
+                        <span className="text-xs text-slate-400 font-medium ml-1.5">
+                          ({assigned.displayId})
+                        </span>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="text-sm font-semibold text-slate-700">
+                      {assigned.displayId || '—'}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
 
           {showPaymentMethodInDetail && (
             <div>
@@ -965,7 +1203,7 @@ export default function AdminCustomerDetail() {
             </div>
           )}
 
-          {selectedPlotId !== 'all' && (
+          {activeSelectedPlot && (
             <div>
               <p className="text-xs text-slate-400 font-medium uppercase">Expected Reg. Date</p>
               {(() => {
@@ -992,7 +1230,7 @@ export default function AdminCustomerDetail() {
             </div>
           )}
 
-          {selectedPlotId !== 'all' && isUpcomingView && (
+          {activeSelectedPlot && isUpcomingView && (
             <div>
               <p className="text-xs text-slate-400 font-medium uppercase">Days Since Booking</p>
               <p className="text-sm font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded w-fit mt-0.5 inline-flex items-center gap-1">
@@ -1002,7 +1240,7 @@ export default function AdminCustomerDetail() {
             </div>
           )}
 
-          {selectedPlotId !== 'all' && (
+          {activeSelectedPlot && (
             <div>
               <p className="text-xs text-slate-400 font-medium uppercase">Payment Status</p>
               <div className="mt-1">
@@ -1019,7 +1257,7 @@ export default function AdminCustomerDetail() {
 
 
 
-          {selectedPlotId !== 'all' && (
+          {activeSelectedPlot && (
             <div>
               <p className="text-xs text-slate-400 font-medium uppercase">Date Added</p>
               <p className="text-sm font-semibold text-slate-800 mt-0.5">{formatDate(lead.dateAdded || (lead as any).createdAt)}</p>
@@ -1029,30 +1267,27 @@ export default function AdminCustomerDetail() {
       </div>
 
       {/* Properties Container with fixed height and internal scroll */}
-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 sm:p-6 min-w-0 overflow-hidden">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-            <Building2 size={18} /> Properties ({selectedPlotId === 'all' ? customerPlots.length : 1})
+          <h3 className="text-base font-bold text-slate-900 flex flex-wrap items-center gap-2">
+            <Building2 size={18} /> Selected booking
+            {customerPlots.length > 1 && (
+              <span className="text-xs font-semibold text-brand-blue ml-1">
+                (+{customerPlots.length - 1} more in dropdown)
+              </span>
+            )}
           </h3>
-          {selectedPlotId !== 'all' && (
-            <button
-              onClick={() => setSelectedPlotId('all')}
-              className="text-xs font-semibold text-brand-blue hover:underline"
-            >
-              Show All Properties
-            </button>
-          )}
         </div>
         {filteredPlotsByProject.length === 0 ? (
           <p className="text-sm text-slate-400">No plots found for the selected view.</p>
         ) : (
           <div className="max-h-[380px] overflow-y-auto pr-1 space-y-4">
             {filteredPlotsByProject.map(({ project: proj, plots }) => (
-              <div key={proj.id || (proj as unknown as {_id:string})._id} className="border border-slate-200 rounded-lg p-4 bg-slate-50/50">
-                <div className="flex items-center gap-2 mb-3">
-                  <Building2 size={16} className="text-brand-blue" />
-                  <span className="text-sm font-bold text-slate-800"><NameTag name={proj.name} displayId={proj.displayId} /></span>
-                  <span className="text-xs text-slate-400">• {proj.location}</span>
+              <div key={proj.id || (proj as unknown as {_id:string})._id} className="border border-slate-200 rounded-lg p-3 sm:p-4 bg-slate-50/50 min-w-0 overflow-hidden">
+                <div className="flex flex-wrap items-center gap-2 mb-3 min-w-0">
+                  <Building2 size={16} className="text-brand-blue shrink-0" />
+                  <span className="text-sm font-bold text-slate-800 break-words"><NameTag name={proj.name} displayId={proj.displayId} /></span>
+                  <span className="text-xs text-slate-400 break-words">• {proj.location}</span>
                   <StatusBadge status={proj.status} />
                 </div>
                 <div className="space-y-3">
@@ -1072,7 +1307,7 @@ export default function AdminCustomerDetail() {
       {/* Follow-up History Container */}
       <div
         ref={followUpSectionRef}
-        className={`bg-white rounded-lg border shadow-sm p-6 transition-all duration-700 ${
+        className={`bg-white rounded-lg border shadow-sm p-4 sm:p-6 min-w-0 overflow-hidden transition-all duration-700 ${
           highlightFollowUps
             ? 'border-amber-400 ring-4 ring-amber-300/80 bg-amber-50/40 shadow-lg scale-[1.01]'
             : 'border-slate-200'
@@ -1124,28 +1359,20 @@ export default function AdminCustomerDetail() {
       </div>
 
       {/* Plot Timeline Container */}
-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 sm:p-6 min-w-0 overflow-hidden">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-3">
-          <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-            <Clock size={18} className="text-brand-blue" /> Plot Timeline
+          <h3 className="text-base font-bold text-slate-900 flex flex-wrap items-center gap-2 min-w-0">
+            <Clock size={18} className="text-brand-blue shrink-0" /> Plot Timeline
+            {activeSelectedPlot && (
+              <span className="text-xs font-medium text-slate-500 break-words">
+                — {formatBookingSelectLabel(
+                  resolveProjectForPlot(activeSelectedPlot, projects)?.name || 'Project',
+                  resolveProjectForPlot(activeSelectedPlot, projects)?.displayId,
+                  activeSelectedPlot.plotNumber
+                )}
+              </span>
+            )}
           </h3>
-          {customerPlots.length > 0 && (
-            <select
-              value={selectedPlotId}
-              onChange={e => setSelectedPlotId(e.target.value)}
-              className="h-9 px-3 border border-slate-200 rounded-md text-xs bg-white text-slate-700 outline-none focus:border-brand-green transition-all font-medium cursor-pointer shadow-sm hover:border-slate-300"
-            >
-              <option value="all">All Projects &amp; Plots</option>
-              {customerPlots.map(p => {
-                const proj = projects.find(pr => (pr.id || (pr as any)._id) === p.projectId);
-                return (
-                  <option key={p.id || (p as any)._id} value={p.id || (p as any)._id}>
-                    {proj ? `${proj.name} [${proj.displayId}]` : 'Project'} - Plot #{p.plotNumber} ({p.status})
-                  </option>
-                );
-              })}
-            </select>
-          )}
         </div>
         
         {combinedTimelineItems.length === 0 ? (
@@ -1156,8 +1383,8 @@ export default function AdminCustomerDetail() {
               {combinedTimelineItems.map((item) => (
                 <div key={item.id} className="relative text-xs">
                   <span className={`absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full border-2 border-white shadow ${item.color}`} />
-                  <p className="font-semibold text-slate-800">{item.title}</p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">{item.subtitle}</p>
+                  <p className="font-semibold text-slate-800 break-words">{item.title}</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5 break-words">{item.subtitle}</p>
                   <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Date: {formatDate(item.rawDate ? item.rawDate.toISOString() : undefined)}</p>
                 </div>
               ))}
@@ -1167,10 +1394,10 @@ export default function AdminCustomerDetail() {
       </div>
 
       {/* Separate Payment Timeline Container */}
-      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 sm:p-6 min-w-0 overflow-hidden">
         <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
           <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-            <CreditCard size={18} className="text-brand-green" /> Payment Timeline
+            <CreditCard size={18} className="text-brand-green shrink-0" /> Payment Timeline
           </h3>
           <StatusBadge status={activeSelectedPlot?.bookedBy?.paymentStatus || lead.paymentStatus || 'Not Paid'} />
         </div>
@@ -1311,6 +1538,23 @@ export default function AdminCustomerDetail() {
                 ))}
               </select>
             </div>
+
+            {(activeSelectedPlot?.status === 'Booked' || activeSelectedPlot?.status === 'Registered') && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Registration Date</label>
+                <input
+                  type="date"
+                  value={editRegistrationDate}
+                  onChange={e => setEditRegistrationDate(e.target.value)}
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none"
+                />
+                {activeSelectedPlot?.status === 'Booked' && (
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    If you set this date, only this plot is registered. Other bookings stay in Upcoming.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-semibold text-slate-500 mb-1">Expected Registration Date</label>

@@ -87,26 +87,33 @@ export function ShareLocationModal({ open, onClose, project }: ShareLocationModa
     if (selectedLeads.length === 0) return;
 
     setSending(true);
-    let successCount = 0;
-    let failCount = 0;
+    let sentViaWaMe = false;
 
-    for (const lead of selectedLeads) {
+    // Direct WhatsApp send when 1 lead is selected (BUG-14)
+    if (selectedLeads.length === 1) {
+      const lead = selectedLeads[0];
       const messageText = `Hello ${lead.customerName},\n\nGreetings from Samy & Co!\n\nHere is the location link to see the land location for *${project?.name || 'our project'}*:\n📍 ${locationLink}\n\nFeel free to contact us if you have any questions or need further assistance.\n\nBest regards,\nSamy & Co Team`;
+      let cleanPhone = (lead.phone || '').replace(/[^\d]/g, '');
+      if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
 
-      const cleanPhone = (lead.phone || '').replace(/[^\d+]/g, '');
+      window.open(`https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`, '_blank');
+      sentViaWaMe = true;
+      successCount++;
+    } else {
+      for (const lead of selectedLeads) {
+        const messageText = `Hello ${lead.customerName},\n\nGreetings from Samy & Co!\n\nHere is the location link to see the land location for *${project?.name || 'our project'}*:\n📍 ${locationLink}\n\nFeel free to contact us if you have any questions or need further assistance.\n\nBest regards,\nSamy & Co Team`;
 
-      try {
-        await whatsappService.send({
-          phone: cleanPhone,
-          message: messageText,
-          type: 'text',
-        });
-        successCount++;
-      } catch {
-        if (selectedLeads.length === 1 && cleanPhone) {
-          window.open(`https://api.whatsapp.com/send?phone=${encodeURIComponent(cleanPhone)}&text=${encodeURIComponent(messageText)}`, '_blank');
+        let cleanPhone = (lead.phone || '').replace(/[^\d]/g, '');
+        if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
+
+        try {
+          await whatsappService.send({
+            phone: cleanPhone,
+            message: messageText,
+            type: 'text',
+          });
           successCount++;
-        } else {
+        } catch {
           failCount++;
         }
       }
@@ -114,10 +121,12 @@ export function ShareLocationModal({ open, onClose, project }: ShareLocationModa
 
     setSending(false);
     if (successCount > 0) {
-      toast.success(`Successfully sent project location to ${successCount} lead(s) via WhatsApp!`);
+      toast.success(sentViaWaMe 
+        ? `Opening WhatsApp with project location for ${selectedLeads[0].customerName}!` 
+        : `Sent project location to ${successCount} lead(s) via WhatsApp!`);
       onClose();
     } else if (failCount > 0) {
-      toast.error('Failed to send WhatsApp messages to some leads');
+      toast.error('Failed to send WhatsApp messages. Please verify recipient phone numbers.');
     }
   };
 

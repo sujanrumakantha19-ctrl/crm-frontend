@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useDebounce } from '@/hooks/useDebounce';
 import { getInitials, getAvatarColor } from '@/data/mockData';
@@ -9,14 +9,16 @@ import { Modal } from '@/components/shared/Modal';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
+import { LEAD_PROJECT_LIST_PARAMS, getProjectId, isProjectSelectableForNewLead } from '@/lib/leadProjectOptions';
 import { leadService, projectService, userService, channelPartnerService } from '@/services';
 import type { CheckPhoneLead } from '@/services/leads';
 import type { Lead, Project, User, LeadStatus } from '@/types';
 import { Search, Phone, MapPin, Calendar, MessageSquare, ChevronLeft, ChevronRight, Plus, ExternalLink, AlertTriangle, X } from 'lucide-react';
 import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
 import { useExportContext } from '@/context/ExportContext';
-import { getYesterdayStr, formatSource } from '@/lib/utils';
+import { getMaxDobStr, formatSource } from '@/lib/utils';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
+import { collapseCustomerLeads } from '@/pages/admin/Leads';
 
 const tabs: { key: string; label: string }[] = [
   { key: 'All', label: 'All Leads' },
@@ -30,11 +32,19 @@ export default function StaffMyLeads() {
   const { userId, user } = useAuth();
   const { triggerDownload } = useExportContext();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab');
   const [leadList, setLeadList] = useState<Lead[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [totalLeads, setTotalLeads] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<string>('Reserved');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (urlTab) {
+      const found = tabs.find(t => t.key.toLowerCase() === urlTab.toLowerCase());
+      if (found) return found.key;
+    }
+    return 'Reserved';
+  });
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search);
   const [page, setPage] = useState(1);
@@ -97,7 +107,10 @@ export default function StaffMyLeads() {
   const fetchCounts = useCallback(async () => {
     if (!userId) return;
     try {
-      const res = await leadService.getCounts();
+      const res = await leadService.getCounts({
+        assignedTo: userId,
+        search: debouncedSearch.trim() || undefined,
+      });
       const data = res.data || res;
       const allCount = (data as any).All ?? (data as any).all ?? 0;
       const reservedCount = (data as any).Reserved ?? (data as any).reserved ?? 0;
@@ -113,7 +126,7 @@ export default function StaffMyLeads() {
         Customer: custCount,
       });
     } catch { /* ignore */ }
-  }, [userId]);
+  }, [userId, debouncedSearch]);
 
   // Fetch backend-driven paginated leads whenever activeTab, page, or search changes
   const fetchLeads = useCallback(async () => {
@@ -121,7 +134,7 @@ export default function StaffMyLeads() {
     setLoading(true);
 
     try {
-      const pRes = await projectService.getAll({ limit: 100 });
+      const pRes = await projectService.getAll({ ...LEAD_PROJECT_LIST_PARAMS });
       setProjects(pRes.data || []);
 
       const queryParams: Record<string, any> = {
@@ -131,9 +144,7 @@ export default function StaffMyLeads() {
         sort: '-createdAt',
       };
 
-      if (activeTab === 'All') {
-        // Fetch all assigned leads without status filter
-      } else if (activeTab === 'Reserved') {
+      if (activeTab === 'Reserved') {
         queryParams.status = 'Open';
       } else if (activeTab === 'Qualified') {
         queryParams.status = 'Qualified';
@@ -141,6 +152,7 @@ export default function StaffMyLeads() {
         queryParams.status = 'Unqualified';
       } else if (activeTab === 'Customer') {
         queryParams.status = 'Customer';
+        queryParams.groupBy = 'customer';
       }
 
       if (debouncedSearch.trim()) {
@@ -148,12 +160,27 @@ export default function StaffMyLeads() {
       }
 
       const lRes = await leadService.getAll(queryParams);
-      const filtered = lRes.data || [];
+      let filtered = lRes.data || [];
+      if (activeTab === 'Customer') {
+        filtered = collapseCustomerLeads(filtered);
+      }
       setLeadList(filtered);
       setTotalLeads(lRes.total ?? lRes.count ?? filtered.length);
     } catch { /* ignore */ }
     setLoading(false);
   }, [userId, activeTab, page, debouncedSearch]);
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam) {
+      const match = tabs.find(t => t.key.toLowerCase() === tabParam.toLowerCase());
+      if (match && match.key !== activeTab) {
+        setActiveTab(match.key);
+        setPage(1);
+        setLoading(true);
+      }
+    }
+  }, [searchParams]);
 
   // Handle Tab Switch — Reset page to 1 and trigger loading spinner
   const handleTabChange = (newTab: string) => {
@@ -161,6 +188,11 @@ export default function StaffMyLeads() {
     setLoading(true);
     setActiveTab(newTab);
     setPage(1);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', newTab);
+      return next;
+    }, { replace: true });
   };
 
   useEffect(() => {
@@ -253,20 +285,24 @@ export default function StaffMyLeads() {
       return;
     }
 
-    if (cEmail.trim()) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(cEmail.trim())) {
-        setFormError('Please enter a valid email address.');
-        return;
-      }
+    if (!cEmail.trim()) {
+      setFormError('Email is required.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cEmail.trim())) {
+      setFormError('Please enter a valid email address.');
+      return;
     }
 
     if (cDob) {
       const selectedDate = new Date(cDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setFormError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setFormError('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
@@ -304,7 +340,7 @@ export default function StaffMyLeads() {
     const newLead: any = {
       customerName: cName.trim(),
       phone: cPhone.trim(),
-      email: cEmail.trim() || 'info@crm.com',
+      email: cEmail.trim().toLowerCase() || undefined,
       city: cCity,
       dob: cDob,
       budget: cBudget.trim() || undefined,
@@ -327,24 +363,27 @@ export default function StaffMyLeads() {
       fetchLeads();
       fetchCounts();
       logActivity({ id: userId!, name: user?.name || 'Staff', role: 'staff', initials: user?.initials }, `Created lead "${cName.trim()}"`, 'Created', 'Lead', '', cName.trim());
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to create lead');
-    }
 
-    // Reset fields
-    setCName('');
-    setCPhone('');
-    setCEmail('');
-    setCCity('Hyderabad');
-    setCNotes('');
-    setCSourceType('Direct');
-    setCSourceName('Direct Intake');
-    setCProjectId('');
-    setCAssigneeId(userId || '');
-    setCStatus('Open');
-    setCPaymentStatus('Not Paid');
-    setCDob('');
-    setCreateOpen(false);
+      // Reset fields only after success
+      setCName('');
+      setCPhone('');
+      setCEmail('');
+      setCCity('Hyderabad');
+      setCNotes('');
+      setCSourceType('Direct');
+      setCSourceName('Direct Intake');
+      setCProjectId('');
+      setCAssigneeId(userId || '');
+      setCStatus('Open');
+      setCPaymentStatus('Not Paid');
+      setCDob('');
+      setFormError('');
+      setCreateOpen(false);
+    } catch (err: any) {
+      const msg = err.message || 'Failed to create lead';
+      setFormError(msg);
+      toast.error(msg);
+    }
   };
 
   const handleFollowUp = async () => {
@@ -446,7 +485,7 @@ export default function StaffMyLeads() {
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search by name or phone..."
+            placeholder="Search by name, phone, or Lead ID (L-...)..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none bg-white"
@@ -520,7 +559,14 @@ export default function StaffMyLeads() {
                             </svg>
                           </button>
                         </div>
-                        <p className="text-xs text-slate-550 font-bold mt-0.5">ID: {lead.displayId || lid}</p>
+                        <p className="text-xs text-slate-550 font-bold mt-0.5">
+                          ID: {lead.displayId || lid}
+                          {((lead as any).relatedLeadDisplayIds && (lead as any).relatedLeadDisplayIds.length > 1) && (
+                            <span className="text-[10px] text-slate-400 font-normal ml-1">
+                              (+{(lead as any).relatedLeadDisplayIds.length - 1} more)
+                            </span>
+                          )}
+                        </p>
                       </div>
                     </div>
                     <StatusBadge status={lead.status} />
@@ -529,6 +575,14 @@ export default function StaffMyLeads() {
                   {/* Badges & Meta Info */}
                   <div className="space-y-2 mb-4">
                     <div className="flex items-center gap-2 flex-wrap text-xs">
+                      {((lead as any).relatedBookingCount && (lead as any).relatedBookingCount > 1) && (
+                        <span
+                          className="inline-flex items-center text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded"
+                          title={`Bookings: ${(lead as any).relatedLeadDisplayIds?.join(', ') || ''}`}
+                        >
+                          {(lead as any).relatedBookingCount} Bookings
+                        </span>
+                      )}
                       {lead.city && (
                         <span className="inline-flex items-center gap-1 text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
                           <MapPin size={11} className="text-slate-400" />
@@ -798,8 +852,8 @@ export default function StaffMyLeads() {
               )}
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">Email Address</label>
-              <input type="email" value={cEmail} onChange={e => setCEmail(e.target.value)} placeholder="Enter email address" className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none" />
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Email Address <span className="text-red-500 font-bold">*</span></label>
+              <input type="email" value={cEmail} onChange={e => setCEmail(e.target.value.toLowerCase())} placeholder="Enter email address" className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1">City</label>
@@ -809,12 +863,12 @@ export default function StaffMyLeads() {
               <label className="block text-xs font-semibold text-slate-600 mb-1">Date of Birth</label>
               <input
                 type="date"
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={cDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setCDob('');
                   } else {
                     setCDob(val);
@@ -827,8 +881,8 @@ export default function StaffMyLeads() {
               <label className="block text-xs font-semibold text-slate-600 mb-1">Preferred Project</label>
               <select value={cProjectId} onChange={e => setCProjectId(e.target.value)} className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none">
                 <option value="">No specific project selected</option>
-                {projects.filter(p => (p.id || (p as any)._id) === cProjectId || !p.status || p.status.toLowerCase() === 'active').map(p => {
-                  const pid = p.id || (p as unknown as {_id:string})._id;
+                {projects.filter(p => isProjectSelectableForNewLead(p, cProjectId)).map(p => {
+                  const pid = getProjectId(p);
                   return <option key={pid} value={pid}>{p.name} ({p.location})</option>;
                 })}
               </select>

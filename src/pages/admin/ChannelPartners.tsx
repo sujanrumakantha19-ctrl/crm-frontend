@@ -10,7 +10,7 @@ import { NameTag } from '@/components/shared/NameTag';
 import { channelPartnerService, userService, leadService, activityLogService } from '@/services';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { useExportContext } from '@/context/ExportContext';
-import { getYesterdayStr } from '@/lib/utils';
+import { getMaxDobStr } from '@/lib/utils';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
 
 export default function AdminChannelPartners() {
@@ -99,6 +99,7 @@ export default function AdminChannelPartners() {
   const [cpNotes, setCpNotes] = useState('');
   const [cpDob, setCpDob] = useState('');
   const [cpGender, setCpGender] = useState<'Male' | 'Female' | 'Other'>('Male');
+  const [savingPartner, setSavingPartner] = useState(false);
 
   // Edit Partner form state
   const [editOpen, setEditOpen] = useState(false);
@@ -134,8 +135,16 @@ export default function AdminChannelPartners() {
 
   const handleSaveEditPartner = async () => {
     if (!editingPartner) return;
-    if (!editName.trim() || !editPhone.trim() || !editGender) {
-      setEditError('Partner Name, Phone Number, and Gender are required fields.');
+    if (!editName.trim()) {
+      setEditError('Partner Name is required.');
+      return;
+    }
+    if (!editPhone.trim()) {
+      setEditError('Phone Number is required.');
+      return;
+    }
+    if (!editGender) {
+      setEditError('Gender is required.');
       return;
     }
     setSavingEdit(true);
@@ -143,10 +152,11 @@ export default function AdminChannelPartners() {
 
     if (editDob) {
       const selectedDate = new Date(editDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setEditError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setEditError('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
@@ -158,7 +168,7 @@ export default function AdminChannelPartners() {
         name: editName.trim(),
         companyName: editCompanyName.trim(),
         phone: editPhone.trim(),
-        email: editEmail.trim(),
+        email: editEmail.trim().toLowerCase() || undefined,
         city: editCity.trim(),
         reraId: editReraId.trim(),
         notes: editNotes.trim(),
@@ -236,7 +246,11 @@ export default function AdminChannelPartners() {
         conversionRate,
       };
     }).sort((a, b) => b.booked - a.booked);
-  }, [partners]);
+  }, [partners, leads]);
+
+  const topConvertingPartners = useMemo(() => {
+    return partnerPerformance.filter(item => item.booked > 0).slice(0, 3);
+  }, [partnerPerformance]);
 
   // Resolve detailed metrics for selected partner modal
   const partnerDetails = useMemo(() => {
@@ -312,38 +326,48 @@ export default function AdminChannelPartners() {
         </div>
 
         <div className="px-6 pb-5 pt-2">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {partnerPerformance.slice(0, 3).map((item, index) => {
-              const rankColors = [
-                { border: 'border-amber-400', bg: 'bg-amber-50', badge: 'bg-amber-400 text-amber-900', label: '1st Place' },
-                { border: 'border-slate-300', bg: 'bg-slate-50', badge: 'bg-slate-300 text-slate-800', label: '2nd Place' },
-                { border: 'border-orange-300', bg: 'bg-orange-50', badge: 'bg-orange-300 text-orange-900', label: '3rd Place' },
-              ][index];
+          {topConvertingPartners.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {topConvertingPartners.map((item, index) => {
+                const rankColors = [
+                  { border: 'border-amber-400', bg: 'bg-amber-50', badge: 'bg-amber-400 text-amber-900', label: '1st Place' },
+                  { border: 'border-slate-300', bg: 'bg-slate-50', badge: 'bg-slate-300 text-slate-800', label: '2nd Place' },
+                  { border: 'border-orange-300', bg: 'bg-orange-50', badge: 'bg-orange-300 text-orange-900', label: '3rd Place' },
+                ][index];
 
-              return (
-                <div key={item.partner.id} className={`relative rounded-lg border-l-4 ${rankColors.border} ${rankColors.bg} p-4 flex flex-col justify-between hover:shadow-md transition-all`}>
-                  <span className={`absolute top-3 right-3 text-[9px] font-bold px-2 py-0.5 rounded ${rankColors.badge}`}>
-                    {rankColors.label}
-                  </span>
+                return (
+                  <div key={item.partner.id} className={`relative rounded-lg border-l-4 ${rankColors.border} ${rankColors.bg} p-4 flex flex-col justify-between hover:shadow-md transition-all`}>
+                    <span className={`absolute top-3 right-3 text-[9px] font-bold px-2 py-0.5 rounded ${rankColors.badge}`}>
+                      {rankColors.label}
+                    </span>
 
-                  <div className="flex items-center gap-3 mb-4">
-                    <Avatar initials={getInitials(item.partner.name)} name={item.partner.name} size="md" bg={item.partner.avatarBg} src={(item.partner as any).avatar} />
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-slate-900 truncate">{item.partner.name}</h3>
-                      <p className="text-xs text-slate-500 truncate">{item.partner.companyName}</p>
+                    <div className="flex items-center gap-3 mb-4">
+                      <Avatar initials={getInitials(item.partner.name)} name={item.partner.name} size="md" bg={item.partner.avatarBg} src={(item.partner as any).avatar} />
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-bold text-slate-900 truncate">{item.partner.name}</h3>
+                        <p className="text-xs text-slate-500 truncate">{item.partner.companyName}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <div className="flex justify-between text-xs font-medium">
+                        <span className="text-slate-500">Booked:</span>
+                        <span className="font-bold text-emerald-700">{item.booked} Booked</span>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="space-y-2.5">
-                    <div className="flex justify-between text-xs font-medium">
-                      <span className="text-slate-500">Booked:</span>
-                      <span className="font-bold text-emerald-700">{item.booked} Booked</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-8 px-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 flex flex-col items-center justify-center text-center">
+              <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-2">
+                <Award size={20} />
+              </div>
+              <p className="text-sm font-semibold text-slate-700">No top converting channel partners yet</p>
+              <p className="text-xs text-slate-400 mt-0.5">Rankings will appear once referred leads are successfully booked.</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -487,7 +511,7 @@ export default function AdminChannelPartners() {
                 type="email" 
                 placeholder="email@example.com" 
                 value={editEmail}
-                onChange={e => setEditEmail(e.target.value)}
+                onChange={e => setEditEmail(e.target.value.toLowerCase())}
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" 
               />
             </div>
@@ -520,12 +544,12 @@ export default function AdminChannelPartners() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={editDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setEditDob('');
                   } else {
                     setEditDob(val);
@@ -560,53 +584,83 @@ export default function AdminChannelPartners() {
       )}
 
       {/* Add Partner Modal */}
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add Channel Partner" size="md" footer={
+      <Modal open={addOpen} onClose={() => { setAddOpen(false); setSavingPartner(false); }} title="Add Channel Partner" size="md" footer={
         <>
-          <button onClick={() => setAddOpen(false)} className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
-          <button onClick={async () => {
-            const { toast } = await import('sonner');
-            if (!cpName.trim() || !cpPhone.trim() || !cpGender) {
-              toast.error('Partner Name, Phone Number, and Gender are required.');
-              return;
-            }
-            const cleanPhone = cpPhone.trim().replace(/\D/g, '');
-            if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
-              toast.error('Please enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
-              return;
-            }
-            if (cpDob) {
-              const selectedDate = new Date(cpDob);
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-              if (selectedDate >= today) {
-                toast.error('Date of Birth cannot be today or a future date.');
+          <button onClick={() => { setAddOpen(false); setSavingPartner(false); }} className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
+          <button
+            type="button"
+            disabled={savingPartner}
+            onClick={async () => {
+              if (savingPartner) return;
+              const { toast } = await import('sonner');
+              if (!cpName.trim()) {
+                toast.error('Partner Name is required.');
                 return;
               }
-            }
-            try {
-              const res = await channelPartnerService.create({
-                name: cpName.trim(),
-                companyName: cpCompanyName.trim() || cpName.trim(),
-                phone: cleanPhone,
-                email: cpEmail.trim() || undefined,
-                city: cpCity.trim(),
-                reraId: cpReraId.trim() || undefined,
-                notes: cpNotes.trim(),
-                gender: cpGender,
-                dob: cpDob,
-                isActive: true,
-                initials: cpName.trim().split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
-              });
-              setPartners(prev => [...prev, res.data]);
-              setCpName(''); setCpCompanyName(''); setCpPhone(''); setCpEmail(''); setCpCity(''); setCpReraId(''); setCpNotes(''); setCpDob('');
-              setAddOpen(false);
-              const { toast } = await import('sonner');
-              toast.success('Channel partner added successfully!');
-            } catch (err: any) {
-              const { toast } = await import('sonner');
-              toast.error(err.message || 'Failed to add channel partner');
-            }
-          }} className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all">Save Partner</button>
+              if (!cpPhone.trim()) {
+                toast.error('Phone Number is required.');
+                return;
+              }
+              if (!cpEmail.trim()) {
+                toast.error('Email is required.');
+                return;
+              }
+              if (!cpGender) {
+                toast.error('Gender is required.');
+                return;
+              }
+              const cleanPhone = cpPhone.trim().replace(/\D/g, '');
+              if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+                toast.error('Please enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
+                return;
+              }
+              if (cpDob) {
+                const selectedDate = new Date(cpDob);
+                const maxDobDate = new Date();
+                maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+                maxDobDate.setHours(23, 59, 59, 999);
+                if (selectedDate > maxDobDate) {
+                  toast.error('Date of Birth indicates age must be at least 18 years.');
+                  return;
+                }
+              }
+              setSavingPartner(true);
+              try {
+                const res = await channelPartnerService.create({
+                  name: cpName.trim(),
+                  companyName: cpCompanyName.trim() || cpName.trim(),
+                  phone: cleanPhone,
+                  email: cpEmail.trim().toLowerCase(),
+                  city: cpCity.trim(),
+                  reraId: cpReraId.trim() || undefined,
+                  notes: cpNotes.trim(),
+                  gender: cpGender,
+                  dob: cpDob,
+                  isActive: true,
+                  initials: cpName.trim().split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
+                });
+                setPartners(prev => [...prev, res.data]);
+                setCpName(''); setCpCompanyName(''); setCpPhone(''); setCpEmail(''); setCpCity(''); setCpReraId(''); setCpNotes(''); setCpDob('');
+                setAddOpen(false);
+                if (res.reused) {
+                  toast.success('Channel partner added — linked to the existing partner account.');
+                } else {
+                  toast.success('Channel partner added — login credentials emailed to the partner.');
+                }
+                if (res.emailSent === false) {
+                  toast.warning('Channel partner saved, but the login credentials email failed to send.');
+                }
+              } catch (err: any) {
+                const { toast } = await import('sonner');
+                toast.error(err.message || 'Failed to add channel partner');
+              } finally {
+                setSavingPartner(false);
+              }
+            }}
+            className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {savingPartner ? 'Saving...' : 'Save Partner'}
+          </button>
         </>
       }>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -623,8 +677,8 @@ export default function AdminChannelPartners() {
             <input type="tel" maxLength={10} placeholder="10-digit mobile number" value={cpPhone} onChange={e => setCpPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Email</label>
-            <input type="email" placeholder="email@example.com" value={cpEmail} onChange={e => setCpEmail(e.target.value)} className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" />
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Email <span className="text-red-500 font-bold">*</span></label>
+            <input type="email" placeholder="email@example.com" value={cpEmail} onChange={e => setCpEmail(e.target.value.toLowerCase())} required className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">City</label>
@@ -649,12 +703,12 @@ export default function AdminChannelPartners() {
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
             <input 
               type="date" 
-              max={getYesterdayStr()}
+              max={getMaxDobStr()}
               value={cpDob} 
               onChange={e => {
                 const val = e.target.value;
-                if (val && val > getYesterdayStr()) {
-                  toast.error('Date of Birth cannot be today or a future date.');
+                if (val && val > getMaxDobStr()) {
+                  toast.error('Date of Birth indicates age must be at least 18 years.');
                   setCpDob('');
                 } else {
                   setCpDob(val);

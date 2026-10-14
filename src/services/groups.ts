@@ -5,6 +5,17 @@ export const groupService = {
   getAll(params?: Record<string, string | number | undefined>) {
     return api.get<Group[]>('/groups', params);
   },
+  getPerformance(params?: { year?: string; month?: string }) {
+    return api.get<{
+      performance: any[];
+      summary: {
+        totalLeadsHandled: number;
+        conversionsClosed: number;
+        qualifiedLeads: number;
+        topGroupId: string | null;
+      };
+    }>('/groups/performance', params);
+  },
   getById(id: string) {
     return api.get<Group>(`/groups/${id}`);
   },

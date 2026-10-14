@@ -13,7 +13,7 @@ import type { UserRole, User } from '@/types';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { Modal } from '@/components/shared/Modal';
 import { getFileUrl } from '@/lib/api';
-import { getYesterdayStr, cn } from '@/lib/utils';
+import { getMaxDobStr, cn } from '@/lib/utils';
 import { useExportContext } from '@/context/ExportContext';
 
 interface TopbarProps {
@@ -119,6 +119,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [profileSuccess, setProfileSuccess] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   // Profile Form Editable Inputs
   const [editName, setEditName] = useState('');
@@ -256,7 +257,11 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
       [`${rolePrefix}/attendance`]: { endpoint: '/export/attendance', filename: 'attendance' },
       [`${rolePrefix}/tasks`]: { endpoint: '/export/tasks', filename: 'tasks' },
       [`${rolePrefix}/projects`]: { endpoint: '/export/projects', filename: 'projects' },
-      [`${rolePrefix}/customers`]: { endpoint: '/export/leads', filename: 'customers', params: { status: 'Customer' } },
+      [`${rolePrefix}/customers`]: {
+        endpoint: '/export/customers',
+        filename: 'loans',
+        params: { status: 'Customer', paymentMethod: 'LOAN' },
+      },
       [`${rolePrefix}/staff`]: { endpoint: '/export/users', filename: 'staff_members', params: { role: 'staff' } },
       [`${rolePrefix}/channel-partners`]: { endpoint: '/export/channel-partners', filename: 'channel_partners' },
       [`${rolePrefix}/reports`]: { endpoint: '/export/reports', filename: 'report' },
@@ -311,6 +316,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
       setPasswordSuccess(false);
       setProfileSuccess(false);
       setProfileError(null);
+      setPasswordError(null);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -324,13 +330,20 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const isAllowedExt = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
 
-    if (!allowedTypes.includes(file.type) && !isAllowedExt) {
-      const { toast } = await import('sonner');
-      toast.error('Unsupported file format. Only JPEG, PNG, WebP, and GIF images are allowed.');
+    // Reject non-images immediately (PDFs, docs, executables, etc.)
+    if (!isAllowedExt || (file.type && !allowedMimes.includes(file.type))) {
+      toast.error('Invalid format. Please select an image file (JPG, PNG, or WebP) for your profile picture.');
+      e.target.value = '';
+      return;
+    }
+
+    // Reject files larger than 5MB
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image size exceeds 5MB limit. Please choose a smaller image.');
       e.target.value = '';
       return;
     }
@@ -348,12 +361,10 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
           avatar: path
         } : { ...user, avatar: path };
         updateUser(updatedData as unknown as User);
-        const { toast } = await import('sonner');
         toast.success('Profile picture updated successfully!');
       }
     } catch (err: any) {
-      const { toast } = await import('sonner');
-      toast.error(err?.message || 'Failed to upload profile picture.');
+      toast.error(err?.message || 'Failed to upload profile picture. Please try another image.');
     } finally {
       e.target.value = '';
     }
@@ -362,40 +373,110 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentPassword || !newPassword || !confirmPassword) {
-      setProfileError('All password fields are required.');
+      setPasswordError('All password fields are required.');
       return;
     }
     if (newPassword !== confirmPassword) {
-      setProfileError('New passwords do not match.');
+      setPasswordError('New passwords do not match.');
+      toast.error('New passwords do not match.');
       return;
     }
     if (newPassword.length < 6) {
-      setProfileError('New password must be at least 6 characters.');
+      setPasswordError('New password must be at least 6 characters.');
+      toast.error('New password must be at least 6 characters.');
       return;
     }
     try {
       await authService.changePassword(currentPassword, newPassword);
       setPasswordSuccess(true);
-      setProfileError(null);
+      setPasswordError(null);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      toast.success('Password updated successfully!');
       setTimeout(() => setPasswordSuccess(false), 3000);
     } catch (err: any) {
-      setProfileError(err?.message || 'Failed to change password.');
+      const errMsg = err?.message || 'Failed to change password. Please check your current password.';
+      setPasswordError(errMsg);
+      toast.error(errMsg);
     }
   };
 
   const handleSaveProfile = async () => {
     if (!editName.trim() || !editEmail.trim() || !editPhone.trim()) {
       setProfileError('Profile name, email, and phone cannot be empty.');
+      toast.error('Profile name, email, and phone cannot be empty.');
       return;
+    }
+
+    // Full Name cannot be numeric only (BUG-4)
+    if (!/[a-zA-Z]/.test(editName.trim())) {
+      setProfileError('Full Name must contain alphabetic characters and cannot be numeric only.');
+      toast.error('Full Name must contain alphabetic characters and cannot be numeric only.');
+      return;
+    }
+
+    // Check if user typed into password fields without clicking 'Update Password' (BUG-3)
+    let passwordUpdated = false;
+    if (currentPassword || newPassword || confirmPassword) {
+      if (!currentPassword) {
+        const msg = 'Please enter your Current Password to change your password, or clear the password fields.';
+        setPasswordError(msg);
+        setProfileError(msg);
+        toast.error('Current Password is required to update your password.');
+        return;
+      }
+      if (!newPassword) {
+        const msg = 'Please enter a New Password, or clear the password fields.';
+        setPasswordError(msg);
+        setProfileError(msg);
+        toast.error('New Password is required.');
+        return;
+      }
+      if (!confirmPassword) {
+        const msg = 'Please confirm your New Password.';
+        setPasswordError(msg);
+        setProfileError(msg);
+        toast.error('Please confirm your New Password.');
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        const msg = 'New passwords do not match. Please correct them or click "Update Password".';
+        setPasswordError(msg);
+        setProfileError(msg);
+        toast.error('New passwords do not match.');
+        return;
+      }
+      if (newPassword.length < 6) {
+        const msg = 'New password must be at least 6 characters.';
+        setPasswordError(msg);
+        setProfileError(msg);
+        toast.error('New password must be at least 6 characters.');
+        return;
+      }
+      // Attempt to save the password along with profile changes
+      try {
+        await authService.changePassword(currentPassword, newPassword);
+        setPasswordSuccess(true);
+        setPasswordError(null);
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+        passwordUpdated = true;
+      } catch (pwErr: any) {
+        const errMsg = pwErr?.message || 'Failed to update password. Please check your current password.';
+        setPasswordError(errMsg);
+        setProfileError(errMsg);
+        toast.error(errMsg);
+        return;
+      }
     }
 
     // Email regex validation
     const emailRegex = /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/;
     if (!emailRegex.test(editEmail.trim())) {
       setProfileError('Please enter a valid email address (e.g. name@example.com).');
+      toast.error('Please enter a valid email address.');
       return;
     }
 
@@ -405,34 +486,43 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
     const is10DigitValid = phoneRegex.test(editPhone.trim()) || (digits.length === 10 && /^[6-9]\d{9}$/.test(digits)) || (digits.length === 12 && digits.startsWith('91'));
     if (!is10DigitValid) {
       setProfileError('Please enter a valid 10-digit phone number (e.g. 9876543210 or +91 9876543210).');
+      toast.error('Please enter a valid 10-digit phone number.');
       return;
     }
 
     if (editDob) {
       const selectedDate = new Date(editDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setProfileError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setProfileError('Date of Birth indicates age must be at least 18 years.');
+        toast.error('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
 
     try {
-      const res = await authService.updateProfile({ name: editName, email: editEmail, phone: editPhone, dob: editDob });
+      const normalizedEmail = editEmail.trim().toLowerCase();
+      const res = await authService.updateProfile({ name: editName.trim(), email: normalizedEmail, phone: editPhone.trim(), dob: editDob });
       const updatedData = res?.data ? {
         ...res.data,
         id: (res.data as unknown as { _id?: string })._id || res.data.id || user.id
-      } : { name: editName, email: editEmail, phone: editPhone, dob: editDob };
+      } : { name: editName.trim(), email: normalizedEmail, phone: editPhone.trim(), dob: editDob };
       updateUser(updatedData as unknown as User);
       setProfileSuccess(true);
       setProfileError(null);
-      setTimeout(() => {
-        setProfileSuccess(false);
-        setProfileOpen(false);
-      }, 1500);
+      if (passwordUpdated) {
+        toast.success('Profile and password updated successfully!');
+      } else {
+        toast.success('Profile changes saved successfully!');
+      }
+      setProfileOpen(false);
+      setProfileSuccess(false);
     } catch (err: any) {
-      setProfileError(err?.message || 'Failed to update profile.');
+      const errMsg = err?.message || 'Failed to update profile.';
+      setProfileError(errMsg);
+      toast.error(errMsg);
     }
   };
 
@@ -484,7 +574,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
 
               {/* Live Backup Stream Downloader Popover Card matching Reference Image 2 */}
               {popoverOpen && (
-                <div className="absolute right-0 top-12 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200/90 p-4 z-50 animate-dropdown overflow-hidden">
+                <div className="absolute right-0 top-12 w-80 max-w-[calc(100vw-2rem)] sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200/90 p-4 z-50 animate-dropdown overflow-hidden">
                   {/* Popover Header */}
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
                     <div className="flex items-center gap-2">
@@ -903,7 +993,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
               <input 
                 type="file" 
                 id="profile-image-upload" 
-                accept="image/*" 
+                accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" 
                 className="hidden" 
                 onChange={handleImageChange} 
               />
@@ -965,7 +1055,7 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
                 <input 
                   type="email" 
                   value={editEmail}
-                  onChange={e => setEditEmail(e.target.value)}
+                  onChange={e => setEditEmail(e.target.value.toLowerCase())}
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs focus:border-brand-green outline-none"
                 />
               </div>
@@ -974,12 +1064,12 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()} 
+                max={getMaxDobStr()} 
                 value={editDob} 
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setEditDob('');
                   } else {
                     setEditDob(val);
@@ -996,34 +1086,63 @@ export function Topbar({ role, title, onToggleSidebar }: TopbarProps) {
               <KeyRound size={16} className="text-slate-400" />
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Reset Account Password</h4>
             </div>
+
+            {/* Inline Password Alert Boxes right in the reset password area */}
+            {passwordError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-xs font-semibold flex items-center gap-2">
+                <AlertCircle size={16} className="shrink-0" />
+                <span>{passwordError}</span>
+              </div>
+            )}
+            {passwordSuccess && (
+              <div className="bg-green-50 border border-green-200 text-green-700 p-3 rounded-lg text-xs font-semibold flex items-center gap-2">
+                <CheckCircle size={16} className="shrink-0" />
+                <span>Password updated successfully!</span>
+              </div>
+            )}
             
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">Current Password</label>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">
+                  Current Password <span className="text-red-500 font-bold">*</span>
+                </label>
                 <input 
                   type="password" 
                   value={currentPassword}
-                  onChange={e => setCurrentPassword(e.target.value)}
+                  onChange={e => {
+                    setCurrentPassword(e.target.value);
+                    if (passwordError) setPasswordError(null);
+                  }}
                   placeholder="••••••••"
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs focus:border-brand-green outline-none"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">New Password</label>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">
+                  New Password <span className="text-red-500 font-bold">*</span>
+                </label>
                 <input 
                   type="password" 
                   value={newPassword}
-                  onChange={e => setNewPassword(e.target.value)}
+                  onChange={e => {
+                    setNewPassword(e.target.value);
+                    if (passwordError) setPasswordError(null);
+                  }}
                   placeholder="Min 6 chars"
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs focus:border-brand-green outline-none"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">Confirm Password</label>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 font-bold text-slate-600">
+                  Confirm Password <span className="text-red-500 font-bold">*</span>
+                </label>
                 <input 
                   type="password" 
                   value={confirmPassword}
-                  onChange={e => setConfirmPassword(e.target.value)}
+                  onChange={e => {
+                    setConfirmPassword(e.target.value);
+                    if (passwordError) setPasswordError(null);
+                  }}
                   placeholder="••••••••"
                   className="w-full h-9 px-3 border border-slate-200 rounded text-xs focus:border-brand-green outline-none"
                 />

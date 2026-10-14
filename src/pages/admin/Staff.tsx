@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UserPlus, Phone, Mail, Calendar, Search, Award, Activity, ListTodo, Briefcase, Percent, Clock, AlertCircle, Pencil } from 'lucide-react';
+import { UserPlus, Phone, Mail, Calendar, Search, Award, Activity, ListTodo, Briefcase, Percent, Clock, AlertCircle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDebounce } from '@/hooks/useDebounce';
 import { Modal } from '@/components/shared/Modal';
@@ -13,7 +13,7 @@ import { logActivity } from '@/lib/activityLogger';
 import { isTaskAssignedTo } from '@/lib/taskAssignee';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { useExportContext } from '@/context/ExportContext';
-import { getYesterdayStr } from '@/lib/utils';
+import { getMaxDobStr, formatDate } from '@/lib/utils';
 import type { User, Group, Lead, Task } from '@/types';
 
 export default function AdminStaff() {
@@ -30,15 +30,35 @@ export default function AdminStaff() {
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Delete confirmation state
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [staffToDelete, setStaffToDelete] = useState<User | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const fetchStaff = useCallback(async (searchTerm = '') => {
+    try {
+      const params: Record<string, any> = { role: 'staff', limit: 100 };
+      if (searchTerm.trim()) {
+        params.search = searchTerm.trim();
+      }
+      const res = await userService.getAll(params);
+      setStaffList(res.data || []);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     Promise.allSettled([
-      userService.getAll({ role: 'staff', limit: 100 }).then(r => setStaffList(r.data || [])).catch(() => {}),
+      fetchStaff(debouncedSearch),
       groupService.getAll({ limit: 50 }).then(r => setGroups(r.data || [])).catch(() => {}),
       leadService.getAll({ limit: 100 }).then(r => setLeads(r.data || [])).catch(() => {}),
       taskService.getAll({ limit: 100 }).then(r => setTasks(r.data || [])).catch(() => {}),
       activityLogService.getAll({ limit: 100 }).then(r => setActivityLogs(r.data || [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchStaff(debouncedSearch);
+  }, [debouncedSearch, fetchStaff]);
 
   // Filter states
   const [groupFilter, setGroupFilter] = useState('all');
@@ -58,6 +78,7 @@ export default function AdminStaff() {
   const [addRole, setAddRole] = useState<'staff' | 'admin'>('staff');
   const [addGroupId, setAddGroupId] = useState('');
   const [addError, setAddError] = useState('');
+  const [savingStaff, setSavingStaff] = useState(false);
 
   // Edit Staff form states
   const [editOpen, setEditOpen] = useState(false);
@@ -104,10 +125,11 @@ export default function AdminStaff() {
 
     if (editDob) {
       const selectedDate = new Date(editDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setEditError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setEditError('Date of Birth indicates age must be at least 18 years.');
         setSavingEdit(false);
         return;
       }
@@ -117,7 +139,7 @@ export default function AdminStaff() {
       const updatedData = {
         name: editName.trim(),
         phone: cleanPhone,
-        email: editEmail.trim() || undefined,
+        email: editEmail.trim().toLowerCase() || undefined,
         designation: editDesignation.trim() || 'Staff Member',
         dob: editDob || undefined,
         gender: editGender,
@@ -156,30 +178,109 @@ export default function AdminStaff() {
     }).sort((a, b) => b.booked - a.booked);
   }, [staffList, leads]);
 
-  // Search by Name, Email, or Phone number, and filter by Group or Status
+  const topSalesPerformers = useMemo(() => {
+    return staffPerformance.filter(item => item.booked > 0).slice(0, 3);
+  }, [staffPerformance]);
+
+  // Smart Search by Name, Staff ID (displayId / employeeId), Phone, or Email, and filter by Group or Status
   const filtered = useMemo(() => {
     return staffList.filter(s => {
       // 1. Search matching
-      const matchesSearch = !debouncedSearch ||
-        s.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-        (s.displayId && s.displayId.toLowerCase().includes(debouncedSearch.toLowerCase())) ||
-        s.phone.includes(debouncedSearch) ||
-        s.email.toLowerCase().includes(debouncedSearch.toLowerCase());
+      if (debouncedSearch && debouncedSearch.trim()) {
+        const q = debouncedSearch.trim().toLowerCase();
+        const qClean = q.replace(/[\s-_]/g, '');
+
+        const staffName = (s.name || '').toLowerCase();
+        const staffEmail = (s.email || '').toLowerCase();
+        const staffPhone = (s.phone || '').replace(/\D/g, '');
+        const qPhone = q.replace(/\D/g, '');
+
+        const staffDisplayId = (s.displayId || '').toLowerCase();
+        const staffDisplayIdClean = staffDisplayId.replace(/[\s-_]/g, '');
+        const staffEmployeeId = ((s as any).employeeId || '').toLowerCase();
+        const staffEmployeeIdClean = staffEmployeeId.replace(/[\s-_]/g, '');
+
+        const matchesName = staffName.includes(q);
+        const matchesEmail = staffEmail.includes(q);
+
+        // Only search by phone if query is strictly phone-like (digits, plus, hyphens, spaces) and has >= 4 digits.
+        // Prevents queries with letters like "staff-28" from stripping letters and matching random phone numbers containing "28".
+        const isPurePhoneQuery = /^[+\d\s()-]+$/.test(q);
+        const matchesPhone = isPurePhoneQuery && qPhone.length >= 4 && staffPhone.includes(qPhone);
+
+        // Smart Staff ID / Employee ID matching:
+        // Handles "STAFF-28", "staff 28", "staff28", "EMP028", "emp 28", "emp28", "28"
+        const matchesDisplayId = staffDisplayId && (staffDisplayId.includes(q) || staffDisplayIdClean.includes(qClean));
+        const matchesEmployeeId = staffEmployeeId && (staffEmployeeId.includes(q) || staffEmployeeIdClean.includes(qClean));
+
+        let matchesPrefixOrNumeric = false;
+        const numOnlyMatch = q.match(/^0*(\d+)$/);
+        const staffPrefixMatch = q.match(/^staff[\s-]*0*(\d+)$/i);
+        const empPrefixMatch = q.match(/^emp[\s-]*0*(\d+)$/i);
+
+        const matchedNum = numOnlyMatch ? parseInt(numOnlyMatch[1], 10) :
+                           staffPrefixMatch ? parseInt(staffPrefixMatch[1], 10) :
+                           empPrefixMatch ? parseInt(empPrefixMatch[1], 10) : null;
+
+        if (matchedNum !== null) {
+          matchesPrefixOrNumeric = (
+            staffDisplayId === `staff-${matchedNum}` ||
+            staffEmployeeId === `emp${String(matchedNum).padStart(3, '0')}` ||
+            staffEmployeeId === `emp-${matchedNum}` ||
+            staffEmployeeId === `emp${matchedNum}`
+          );
+        }
+
+        const matchesSearch = matchesName || matchesEmail || matchesPhone || matchesDisplayId || matchesEmployeeId || matchesPrefixOrNumeric;
+        if (!matchesSearch) return false;
+      }
 
       // 2. Group Filter
-      const sGroup = groups.find(g => g.members.includes(s.id));
+      const sGroup = groups.find(g => (g.members || []).includes(s.id || (s as any)._id));
       const matchesGroup = groupFilter === 'all' ||
         (groupFilter === 'unassigned' && !sGroup) ||
         (sGroup?.id === groupFilter);
+      if (!matchesGroup) return false;
 
       // 3. Status Filter
       const matchesStatus = statusFilter === 'all' ||
         (statusFilter === 'active' && s.isActive) ||
         (statusFilter === 'inactive' && !s.isActive);
+      if (!matchesStatus) return false;
 
-      return matchesSearch && matchesGroup && matchesStatus;
+      return true;
     });
-  }, [staffList, debouncedSearch, groupFilter, statusFilter]);
+  }, [staffList, debouncedSearch, groupFilter, statusFilter, groups]);
+
+  const handleDeleteClick = (staff: User) => {
+    setStaffToDelete(staff);
+    setDeleteConfirmOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!staffToDelete) return;
+    const sid = staffToDelete.id || (staffToDelete as any)._id;
+    setDeleting(true);
+    try {
+      await userService.delete(sid);
+      setStaffList(prev => prev.filter(s => s.id !== sid && (s as any)._id !== sid));
+      setDeleteConfirmOpen(false);
+      toast.success(`Staff member "${staffToDelete.name}" deleted successfully.`);
+      logActivity(
+        { id: userId!, name: user!.name, role: role!, initials: user!.initials },
+        `Deleted staff member "${staffToDelete.name}"`,
+        'Deleted',
+        'Staff',
+        sid,
+        staffToDelete.name
+      );
+      setStaffToDelete(null);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete staff member');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const toggleStatus = async (id: string) => {
     const staff = staffList.find(s => s.id === id);
@@ -229,8 +330,21 @@ export default function AdminStaff() {
   }, [selectedStaff, leads, tasks, activityLogs]);
 
   const handleAddStaff = async () => {
-    if (!addName.trim() || !addPhone.trim() || !addGender) {
-      setAddError('Full Name, Phone Number, and Gender are required fields.');
+    if (savingStaff) return;
+    if (!addName.trim()) {
+      setAddError('Full Name is required.');
+      return;
+    }
+    if (!addPhone.trim()) {
+      setAddError('Phone Number is required.');
+      return;
+    }
+    if (!addEmail.trim()) {
+      setAddError('Email is required.');
+      return;
+    }
+    if (!addGender) {
+      setAddError('Gender is required.');
       return;
     }
 
@@ -242,28 +356,29 @@ export default function AdminStaff() {
 
     if (addDob) {
       const selectedDate = new Date(addDob);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (selectedDate >= today) {
-        setAddError('Date of Birth cannot be today or a future date.');
+      const maxDobDate = new Date();
+      maxDobDate.setFullYear(maxDobDate.getFullYear() - 18);
+      maxDobDate.setHours(23, 59, 59, 999);
+      if (selectedDate > maxDobDate) {
+        setAddError('Date of Birth indicates age must be at least 18 years.');
         return;
       }
     }
 
     setAddError('');
+    setSavingStaff(true);
 
     try {
       const res = await userService.create({
         name: addName.trim(),
         phone: cleanPhone,
-        email: addEmail.trim() || undefined,
-        designation: 'Staff Member',
+        email: addEmail.trim().toLowerCase(),
+        designation: addDesignation.trim() || 'Staff Member',
         dob: addDob || undefined,
         gender: addGender,
         groupId: addGroupId || undefined,
-        role: 'staff',
+        role: addRole || 'staff',
         initials: addName.trim().split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
-        password: '12345678',
         isActive: true,
       });
       setStaffList(prev => [...prev, res.data]);
@@ -275,11 +390,16 @@ export default function AdminStaff() {
       setAddGroupId('');
       setAddOpen(false);
       const { toast } = await import('sonner');
-      toast.success('Staff member added successfully!');
+      toast.success(`Staff member added — login credentials emailed to ${addEmail.trim()}`);
+      if (res.emailSent === false) {
+        toast.warning('Staff saved, but the credentials email failed to send.');
+      }
       logActivity({ id: userId!, name: user!.name, role: role!, initials: user!.initials }, `Added staff member "${addName}"`, 'Created', 'Staff', '', addName);
     } catch (err: any) {
       setAddError(err.message || 'Failed to add staff member');
       toast.error(err.message || 'Failed to add staff member');
+    } finally {
+      setSavingStaff(false);
     }
   };
 
@@ -291,7 +411,7 @@ export default function AdminStaff() {
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search name, email, phone..."
+            placeholder="Search by name, Staff ID (e.g. STAFF-28, EMP028), phone, email..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="pl-8 pr-3 h-9 w-full border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all"
@@ -341,8 +461,8 @@ export default function AdminStaff() {
           </select>
       </div>
 
-      {/* Top Performers Leaderboard */}
-      {!loading && (
+      {/* Top Performers Leaderboard — only show when not searching so results are immediately visible */}
+      {!loading && !debouncedSearch.trim() && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="flex items-center gap-3 px-6 pt-5 pb-3">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">
@@ -355,42 +475,52 @@ export default function AdminStaff() {
           </div>
 
           <div className="px-6 pb-5 pt-2">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {staffPerformance.slice(0, 3).map((item, index) => {
-                const rankColors = [
-                  { border: 'border-amber-400', bg: 'bg-amber-50', badge: 'bg-amber-400 text-amber-900', label: '1st Place' },
-                  { border: 'border-slate-300', bg: 'bg-slate-50', badge: 'bg-slate-300 text-slate-800', label: '2nd Place' },
-                  { border: 'border-orange-300', bg: 'bg-orange-50', badge: 'bg-orange-300 text-orange-900', label: '3rd Place' },
-                ][index];
+            {topSalesPerformers.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {topSalesPerformers.map((item, index) => {
+                  const rankColors = [
+                    { border: 'border-amber-400', bg: 'bg-amber-50', badge: 'bg-amber-400 text-amber-900', label: '1st Place' },
+                    { border: 'border-slate-300', bg: 'bg-slate-50', badge: 'bg-slate-300 text-slate-800', label: '2nd Place' },
+                    { border: 'border-orange-300', bg: 'bg-orange-50', badge: 'bg-orange-300 text-orange-900', label: '3rd Place' },
+                  ][index];
 
-                return (
-                  <div key={item.staff.id} className={`relative rounded-lg border-l-4 ${rankColors.border} ${rankColors.bg} p-4 flex flex-col justify-between hover:shadow-md transition-all`}>
-                    <span className={`absolute top-3 right-3 text-[9px] font-bold px-2 py-0.5 rounded ${rankColors.badge}`}>
-                      {rankColors.label}
-                    </span>
+                  return (
+                    <div key={item.staff.id} className={`relative rounded-lg border-l-4 ${rankColors.border} ${rankColors.bg} p-4 flex flex-col justify-between hover:shadow-md transition-all`}>
+                      <span className={`absolute top-3 right-3 text-[9px] font-bold px-2 py-0.5 rounded ${rankColors.badge}`}>
+                        {rankColors.label}
+                      </span>
 
-                    <div className="flex items-center gap-3 mb-4">
-                      <Avatar initials={getInitials(item.staff.name)} name={item.staff.name} size="md" bg={item.staff.avatarBg} src={(item.staff as any).avatar} />
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-bold text-slate-900 truncate">{item.staff.name}</h3>
-                        <p className="text-xs text-slate-500 truncate">{item.staff.designation}</p>
+                      <div className="flex items-center gap-3 mb-4">
+                        <Avatar initials={getInitials(item.staff.name)} name={item.staff.name} size="md" bg={item.staff.avatarBg} src={(item.staff as any).avatar} />
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-bold text-slate-900 truncate">{item.staff.name}</h3>
+                          <p className="text-xs text-slate-500 truncate">{item.staff.designation}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        <div className="flex justify-between text-xs font-medium">
+                          <span className="text-slate-500">Booked:</span>
+                          <span className="font-bold text-emerald-700">{item.booked} Booked</span>
+                        </div>
+                        <div className="flex justify-between text-xs font-medium">
+                          <span className="text-slate-500">Total Leads Handled:</span>
+                          <span className="font-semibold text-slate-700">{item.totalLeads} Leads</span>
+                        </div>
                       </div>
                     </div>
-
-                    <div className="space-y-2.5">
-                      <div className="flex justify-between text-xs font-medium">
-                        <span className="text-slate-500">Booked:</span>
-                        <span className="font-bold text-emerald-700">{item.booked} Booked</span>
-                      </div>
-                      <div className="flex justify-between text-xs font-medium">
-                        <span className="text-slate-500">Total Leads Handled:</span>
-                        <span className="font-semibold text-slate-700">{item.totalLeads} Leads</span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-8 px-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 flex flex-col items-center justify-center text-center">
+                <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-2">
+                  <Award size={20} />
+                </div>
+                <p className="text-sm font-semibold text-slate-700">No top sales performers yet</p>
+                <p className="text-xs text-slate-400 mt-0.5">Rankings will appear once customer bookings are closed.</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -421,7 +551,7 @@ export default function AdminStaff() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(staff => {
+          {filtered.map((staff, idx) => {
             const group = groups.find(g => g.members.includes(staff.id));
             const perf = staffPerformance.find(p => p.staff.id === staff.id);
             return (
@@ -459,7 +589,7 @@ export default function AdminStaff() {
                     </div>
                     {staff.dob && (
                       <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <Calendar size={12} /> {new Date(staff.dob).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}
+                        <Calendar size={12} /> {formatDate(staff.dob)}
                       </div>
                     )}
                   </div>
@@ -480,6 +610,13 @@ export default function AdminStaff() {
                       className="text-xs text-slate-600 font-bold hover:text-brand-blue flex items-center gap-1"
                     >
                       <Pencil size={12} /> Edit
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteClick(staff)}
+                      className="text-xs text-red-600 font-bold hover:text-red-700 flex items-center gap-1 transition-colors"
+                      title="Delete Staff"
+                    >
+                      <Trash2 size={12} /> Delete
                     </button>
                     <button 
                       onClick={() => navigate(`/admin/staff/${staff.id || (staff as any)._id}`)}
@@ -504,13 +641,21 @@ export default function AdminStaff() {
       {addOpen && (
         <Modal 
           open={addOpen} 
-          onClose={() => setAddOpen(false)} 
+          onClose={() => { if (!savingStaff) setAddOpen(false); }} 
           title="Add Staff Member" 
           size="md" 
           footer={
             <>
-              <button onClick={() => setAddOpen(false)} className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
-              <button onClick={handleAddStaff} className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all">Save Staff</button>
+              <button onClick={() => { if (!savingStaff) setAddOpen(false); }} disabled={savingStaff} className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+              <button
+                type="button"
+                onClick={handleAddStaff}
+                disabled={savingStaff}
+                className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {savingStaff && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {savingStaff ? 'Saving...' : 'Save Staff'}
+              </button>
             </>
           }
         >
@@ -548,12 +693,15 @@ export default function AdminStaff() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Email</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Email <span className="text-red-500 font-bold">*</span>
+              </label>
               <input 
                 type="email" 
                 placeholder="email@example.com" 
                 value={addEmail}
-                onChange={e => setAddEmail(e.target.value)}
+                onChange={e => setAddEmail(e.target.value.toLowerCase())}
+                required
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" 
               />
             </div>
@@ -561,12 +709,12 @@ export default function AdminStaff() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={addDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setAddDob('');
                   } else {
                     setAddDob(val);
@@ -600,12 +748,6 @@ export default function AdminStaff() {
                 <option value="">None (Optional)</option>
                 {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
-            </div>
-          </div>
-          <div className="mt-4">
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Profile Photo</label>
-            <div className="w-20 h-20 rounded-full border-2 border-dashed border-slate-200 flex items-center justify-center hover:border-blue-400 cursor-pointer transition-colors">
-              <UserPlus size={20} className="text-slate-300" />
             </div>
           </div>
         </Modal>
@@ -667,7 +809,7 @@ export default function AdminStaff() {
                 type="email" 
                 placeholder="email@example.com" 
                 value={editEmail}
-                onChange={e => setEditEmail(e.target.value)}
+                onChange={e => setEditEmail(e.target.value.toLowerCase())}
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green outline-none transition-all" 
               />
             </div>
@@ -676,12 +818,12 @@ export default function AdminStaff() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Date of Birth</label>
               <input 
                 type="date" 
-                max={getYesterdayStr()}
+                max={getMaxDobStr()}
                 value={editDob}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val && val > getYesterdayStr()) {
-                    toast.error('Date of Birth cannot be today or a future date.');
+                  if (val && val > getMaxDobStr()) {
+                    toast.error('Date of Birth indicates age must be at least 18 years.');
                     setEditDob('');
                   } else {
                     setEditDob(val);
@@ -973,6 +1115,73 @@ export default function AdminStaff() {
               </div>
             )}
           </div>
+        </Modal>
+      )}
+
+      {/* Delete Staff Confirmation Modal */}
+      {deleteConfirmOpen && staffToDelete && (
+        <Modal
+          open={deleteConfirmOpen}
+          onClose={() => !deleting && setDeleteConfirmOpen(false)}
+          title="Delete Staff Member"
+          size="md"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={deleting}
+                className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {deleting && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {deleting ? 'Deleting...' : 'Delete Staff Member'}
+              </button>
+            </>
+          }
+        >
+          {(() => {
+            const sid = staffToDelete.id || (staffToDelete as any)._id;
+            const assignedLeads = leads.filter(l => l.assignedTo === sid || (l as any).assignedTo?._id === sid);
+            const customerCount = assignedLeads.filter(l => l.status === 'Customer').length;
+            const activeLeadCount = assignedLeads.filter(l => l.status !== 'Customer').length;
+
+            return (
+              <div className="space-y-4">
+                <div className="flex items-start gap-3 p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-800 text-xs leading-relaxed">
+                  <AlertCircle size={18} className="shrink-0 text-red-600 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-red-900 text-sm">Warning: This action is permanent</p>
+                    <p className="mt-1">
+                      Are you sure you want to delete <span className="font-bold">{staffToDelete.name}</span> ({staffToDelete.displayId || (staffToDelete as any).employeeId || 'Staff'})? This will permanently remove their login account.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 space-y-2 text-xs text-slate-600">
+                  <p className="font-semibold text-slate-800">What happens to their assigned data:</p>
+                  <ul className="list-disc list-inside space-y-1 text-slate-600">
+                    <li>
+                      <span className="font-semibold text-slate-800">{activeLeadCount} active lead{activeLeadCount === 1 ? '' : 's'}</span> and <span className="font-semibold text-slate-800">{customerCount} customer{customerCount === 1 ? '' : 's'}</span> will become <span className="font-semibold text-amber-700">Unassigned</span> (no lead or customer records will be deleted).
+                    </li>
+                    <li>
+                      You can immediately reassign these leads and customers to other active staff members from the Leads page.
+                    </li>
+                    <li>
+                      The staff member will be cleanly removed from any assigned groups and tasks.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            );
+          })()}
         </Modal>
       )}
     </div>

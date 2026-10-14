@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import type { UserRole, User } from '@/types';
 import { authService } from '@/services/auth';
+import { attendanceService } from '@/services/attendance';
 
 interface AuthContextType {
   role: UserRole | null;
@@ -90,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
   }, []);
 
-  const setUserFromAuth = useCallback((authData: { id: string; name: string; email: string; role: UserRole; initials: string; designation: string; phone: string; avatarBg: string }) => {
+  const setUserFromAuth = useCallback((authData: { id: string; name: string; email: string; role: UserRole; initials: string; designation: string; phone: string; avatarBg: string; avatar?: string }) => {
     const u = { ...authData, id: (authData as unknown as { _id?: string })._id || authData.id } as unknown as User;
     setUser(u);
     localStorage.setItem('crm_user', JSON.stringify(u));
@@ -111,11 +112,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Attendance states
-  const [checkedIn, setCheckedIn] = useState<boolean>(() => localStorage.getItem('crm_checkedin') === 'true');
-  const [checkInTime, setCheckInTime] = useState<string | null>(() => localStorage.getItem('crm_checkintime'));
-  const [checkInTimestamp, setCheckInTimestamp] = useState<number | null>(() => {
+  const [checkedIn, setCheckedIn] = useState<boolean>(() => {
+    const isChecked = localStorage.getItem('crm_checkedin') === 'true';
     const s = localStorage.getItem('crm_checkints');
-    return s ? parseInt(s, 10) : null;
+    if (isChecked && s) {
+      const ts = parseInt(s, 10);
+      const d = new Date(ts);
+      const now = new Date();
+      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+        return true;
+      } else {
+        localStorage.setItem('crm_checkedin', 'false');
+        localStorage.removeItem('crm_checkintime');
+        localStorage.removeItem('crm_checkints');
+        return false;
+      }
+    }
+    return false;
+  });
+  const [checkInTime, setCheckInTime] = useState<string | null>(() => {
+    const isChecked = localStorage.getItem('crm_checkedin') === 'true';
+    return isChecked ? localStorage.getItem('crm_checkintime') : null;
+  });
+  const [checkInTimestamp, setCheckInTimestamp] = useState<number | null>(() => {
+    const isChecked = localStorage.getItem('crm_checkedin') === 'true';
+    const s = localStorage.getItem('crm_checkints');
+    return isChecked && s ? parseInt(s, 10) : null;
   });
 
   const handleCheckIn = useCallback((timeStr: string, timestamp: number) => {
@@ -135,6 +157,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('crm_checkintime');
     localStorage.removeItem('crm_checkints');
   }, []);
+
+  // Synchronize active attendance session from backend for staff users on mount & login
+  useEffect(() => {
+    if (!user || user.role !== 'staff') return;
+    let isMounted = true;
+    attendanceService.getToday()
+      .then(res => {
+        if (!isMounted) return;
+        const rawList = Array.isArray((res as any)?.data)
+          ? (res as any).data
+          : (res as any)?.data
+            ? [(res as any).data]
+            : Array.isArray(res)
+              ? res
+              : [];
+        const activeRecord = rawList.find(
+          (r: any) => !r.checkOut || r.checkOut === '—' || r.checkOut === '-'
+        );
+        if (activeRecord) {
+          const cInTime = (activeRecord.checkIn === '—' || activeRecord.checkIn === '-') ? null : activeRecord.checkIn;
+          const ts = activeRecord.createdAt ? new Date(activeRecord.createdAt).getTime() : Date.now();
+          handleCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
+        } else {
+          handleCheckOut();
+        }
+      })
+      .catch(() => {});
+
+    return () => { isMounted = false; };
+  }, [user?.id, user?.role, handleCheckIn, handleCheckOut]);
 
   return (
     <AuthContext.Provider value={{

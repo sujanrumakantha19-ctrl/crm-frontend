@@ -8,6 +8,7 @@ import { leadService, projectService, plotService } from '@/services';
 import { useAuth } from '@/context/AuthContext';
 import { formatDate } from '@/lib/utils';
 import type { Lead, Project } from '@/types';
+import { getProjectInventoryPlotTotal } from '@/lib/projectPlotCounts';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -244,7 +245,7 @@ export default function PartnerDashboard() {
                   <p className="text-sm font-semibold text-slate-800 truncate">{p.name}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{p.location}</p>
                   <div className="flex items-center gap-3 mt-1.5">
-                    <span className="text-[11px] text-slate-400">Total: <span className="font-medium text-slate-600">{p.totalPlots}</span></span>
+                    <span className="text-[11px] text-slate-400">Total: <span className="font-medium text-slate-600">{getProjectInventoryPlotTotal(p)}</span></span>
                     <span className="text-[11px] text-slate-400">Available: <span className="font-medium text-emerald-600">{available}</span></span>
                   </div>
                 </div>
@@ -291,7 +292,7 @@ export default function PartnerDashboard() {
                   <tr key={pid} className="hover:bg-slate-50">
                     <td className="px-4 py-3 text-sm font-medium text-slate-800">{p.name}</td>
                     <td className="px-4 py-3 text-sm text-slate-500">{p.location}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{p.totalPlots}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{getProjectInventoryPlotTotal(p)}</td>
                     <td className="px-4 py-3 text-sm text-emerald-600 font-medium">{available}</td>
                     <td className="px-4 py-3">
                       <button onClick={() => navigate(`/partner/add-lead?projectId=${pid}`)} className="px-3 py-1.5 bg-brand-green text-white text-xs font-semibold rounded hover:bg-brand-darkgreen transition-colors">

@@ -3,14 +3,13 @@ import { Plus, Pencil, Trash2, Award, TrendingUp, CheckSquare, Target, Percent, 
 import { Modal } from '@/components/shared/Modal';
 import { Avatar } from '@/components/shared/Avatar';
 import { NameTag } from '@/components/shared/NameTag';
-import { groupService, userService, leadService, taskService, plotService } from '@/services';
+import { groupService, userService } from '@/services';
 import { useAuth } from '@/context/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
-import { isTaskAssignedTo } from '@/lib/taskAssignee';
 import { getInitials, getAvatarColor } from '@/data/mockData';
 import { useDebounce } from '@/hooks/useDebounce';
-import type { Group, User, Lead, Task, Plot } from '@/types';
+import type { Group, User } from '@/types';
 
 const MONTH_OPTIONS = [
   { value: 'All', label: 'All Months' },
@@ -36,25 +35,6 @@ const YEAR_OPTIONS = [
   { value: '2023', label: '2023' },
 ];
 
-const matchMonthYear = (dateStr?: any, targetYear?: string, targetMonth?: string): boolean => {
-  if (!targetYear || targetYear === 'All') {
-    if (!targetMonth || targetMonth === 'All') return true;
-  }
-  if (!dateStr) return false;
-  const val = typeof dateStr === 'object' ? (dateStr.date || dateStr.createdAt || dateStr.timestamp) : dateStr;
-  if (!val) return false;
-  const d = new Date(val);
-  if (isNaN(d.getTime())) return false;
-
-  if (targetYear && targetYear !== 'All') {
-    if (d.getFullYear().toString() !== targetYear) return false;
-  }
-  if (targetMonth && targetMonth !== 'All') {
-    if ((d.getMonth() + 1).toString() !== String(parseInt(targetMonth, 10))) return false;
-  }
-  return true;
-};
-
 const isMemberOfGroup = (members?: any[], target?: any): boolean => {
   if (!target || !Array.isArray(members) || members.length === 0) return false;
   const targetId = typeof target === 'string' ? target : (target.id || target._id || '');
@@ -70,21 +50,42 @@ export default function AdminGroups() {
   const [viewGroup, setViewGroup] = useState<any | null>(null);
   const [groupsList, setGroupsList] = useState<Group[]>([]);
   const [staffUsers, setStaffUsers] = useState<User[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [plots, setPlots] = useState<Plot[]>([]);
   const [loading, setLoading] = useState(true);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
 
+  const [editingGroup, setEditingGroup] = useState<Group | null>(null);
+  const [deleteTargetGroup, setDeleteTargetGroup] = useState<Group | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // Month & Year Filter state for group reports
   const [reportYear, setReportYear] = useState<string>('All');
   const [reportMonth, setReportMonth] = useState<string>('All');
 
+  // Performance data state from server-side aggregation
+  const [performanceData, setPerformanceData] = useState<{
+    performance: any[];
+    summary: {
+      totalLeadsHandled: number;
+      conversionsClosed: number;
+      qualifiedLeads: number;
+      topGroupId: string | null;
+    };
+  }>({
+    performance: [],
+    summary: {
+      totalLeadsHandled: 0,
+      conversionsClosed: 0,
+      qualifiedLeads: 0,
+      topGroupId: null,
+    },
+  });
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+
   // Modal Search & Infinite Scroll States
   const [memberSearch, setMemberSearch] = useState('');
-  const debouncedMemberSearch = useDebounce(memberSearch, 1000);
+  const debouncedMemberSearch = useDebounce(memberSearch, 500);
   const [memberVisibleCount, setMemberVisibleCount] = useState(10);
 
   useEffect(() => {
@@ -96,81 +97,160 @@ export default function AdminGroups() {
     Promise.allSettled([
       groupService.getAll({ limit: 50 }).then(r => setGroupsList(r.data || [])).catch(() => {}),
       userService.getAll({ role: 'staff', limit: 100 }).then(r => setStaffUsers(r.data || [])).catch(() => {}),
-      leadService.getAll({ limit: 500 }).then(r => setLeads(r.data || [])).catch(() => {}),
-      taskService.getAll({ limit: 500 }).then(r => setTasks(r.data || [])).catch(() => {}),
-      plotService.getAll({ limit: 1000 }).then(r => setPlots(r.data || [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, []);
 
-  const unassignedStaff = staffUsers.filter(s => {
-    const sId = s.id || (s as any)._id;
-    return !groupsList.some(g => isMemberOfGroup(g.members, sId));
-  });
+  useEffect(() => {
+    setPerformanceLoading(true);
+    groupService.getPerformance({ year: reportYear, month: reportMonth })
+      .then(res => {
+        if (res.data) {
+          setPerformanceData(res.data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setPerformanceLoading(false));
+  }, [reportYear, reportMonth]);
 
-  // Calculate and sort group performance metrics based on selected Month & Year
-  const computedGroupsPerformance = useMemo(() => {
-    return groupsList.map(group => {
-      const members = group.members || [];
-      // Find all leads assigned to members of this group in selected Month & Year
-      const groupLeads = leads.filter(l =>
-        l.assignedTo &&
-        isMemberOfGroup(members, l.assignedTo) &&
-        matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)
-      );
-      const totalLeads = groupLeads.length;
-
-      // Bookings count for group: plots booked or registered by members of this group in selected Month & Year
-      const groupBookings = plots.filter(p =>
-        (p.status === 'Booked' || p.status === 'Registered') &&
-        (
-          isMemberOfGroup(members, p.assignedTo) ||
-          isMemberOfGroup(members, (p.bookedBy as any)?.staffId) ||
-          groupLeads.some(l => String(l.id || (l as any)._id) === String((p.bookedBy as any)?.leadId))
-        ) &&
-        matchMonthYear(p.bookingDate || p.registrationDate || (p as any).createdAt, reportYear, reportMonth)
-      ).length;
-
-      const convertedCustomers = groupLeads.filter(l => l.status === 'Customer').length;
-      const bookingsCount = Math.max(groupBookings, convertedCustomers);
-
-      // Qualified Leads (Leads currently in Qualified status) in selected Month & Year
-      const qualifiedLeads = groupLeads.filter(l => l.status === 'Qualified').length;
-
-      const activeLeads = groupLeads.filter(l => l.status === 'Open' || l.status === 'Qualified').length;
-      const conversionRate = totalLeads > 0 ? Math.round((convertedCustomers / totalLeads) * 100) : 0;
-
-      // Total follow-ups logged by group members in selected Month & Year
-      const totalFollowUps = groupLeads.reduce((acc, lead) => {
-        const matchingLogs = (lead.followUps || []).filter(f =>
-          matchMonthYear(f.date || (f as any).createdAt, reportYear, reportMonth)
-        );
-        return acc + (matchingLogs.length || (lead.followUps?.length && (reportYear === 'All' && reportMonth === 'All') ? lead.followUps.length : 0));
-      }, 0);
-
-      return {
-        group,
-        totalLeads,
-        bookingsCount,
-        convertedCustomers,
-        qualifiedLeads,
-        activeLeads,
-        conversionRate,
-        totalFollowUps,
-      };
-    }).sort((a, b) => {
-      if (b.bookingsCount !== a.bookingsCount) {
-        return b.bookingsCount - a.bookingsCount;
-      }
-      return b.totalLeads - a.totalLeads;
+  // Filter only active staff who are not assigned to any group
+  const unassignedStaff = useMemo(() => {
+    return staffUsers.filter(s => {
+      const sId = String(s.id || (s as any)._id);
+      return s.isActive !== false && !groupsList.some(g => isMemberOfGroup(g.members, sId));
     });
-  }, [groupsList, leads, plots, reportYear, reportMonth]);
+  }, [staffUsers, groupsList]);
 
-  const topGroupId = useMemo(() => {
-    if (computedGroupsPerformance.length === 0) return null;
-    const top = computedGroupsPerformance[0];
-    if (!top || top.convertedCustomers <= 0 || !top.group) return null;
-    return top.group.id || (top.group as any)._id || null;
-  }, [computedGroupsPerformance]);
+  // When creating: show active unassigned staff
+  // When editing: show active members of the current group PLUS active unassigned staff
+  const selectableStaffForModal = useMemo(() => {
+    return staffUsers.filter(s => {
+      const sId = String(s.id || (s as any)._id);
+      if (s.isActive === false) return false;
+      if (editingGroup && isMemberOfGroup(editingGroup.members, sId)) return true;
+      return !groupsList.some(g => isMemberOfGroup(g.members, sId));
+    });
+  }, [staffUsers, groupsList, editingGroup]);
+
+  const handleOpenCreate = () => {
+    setEditingGroup(null);
+    setNewGroupName('');
+    setNewGroupDesc('');
+    setNewGroupMembers([]);
+    setCreateOpen(true);
+  };
+
+  const handleOpenEdit = (group: Group) => {
+    setEditingGroup(group);
+    setNewGroupName(group.name || '');
+    setNewGroupDesc(group.description || '');
+    const currentMemberIds = (group.members || []).map((m: any) => typeof m === 'string' ? m : (m?.id || m?._id || ''));
+    setNewGroupMembers(currentMemberIds);
+    setCreateOpen(true);
+  };
+
+  const handleSaveGroup = async () => {
+    if (!newGroupName.trim()) {
+      const { toast } = await import('sonner');
+      toast.error('Group Name is required.');
+      return;
+    }
+
+    try {
+      const { toast } = await import('sonner');
+      if (editingGroup) {
+        const groupId = editingGroup.id || (editingGroup as any)._id;
+        const res = await groupService.update(groupId, {
+          name: newGroupName.trim(),
+          description: newGroupDesc.trim(),
+          members: newGroupMembers,
+        });
+        const updatedGroup = res.data;
+        setGroupsList(prev => prev.map(g => (g.id === groupId || (g as any)._id === groupId ? updatedGroup : g)));
+        setCreateOpen(false);
+        setEditingGroup(null);
+        toast.success(`Group "${newGroupName.trim()}" updated successfully!`);
+        logActivity(
+          { id: userId!, name: user!.name, role: role!, initials: user!.initials },
+          `Updated group "${newGroupName.trim()}"`,
+          'Updated',
+          'Group',
+          '',
+          newGroupName.trim()
+        );
+      } else {
+        const res = await groupService.create({
+          name: newGroupName.trim(),
+          description: newGroupDesc.trim(),
+          members: newGroupMembers,
+        });
+        setGroupsList(prev => [...prev, res.data]);
+        setCreateOpen(false);
+        toast.success(`Group "${newGroupName.trim()}" created successfully!`);
+        logActivity(
+          { id: userId!, name: user!.name, role: role!, initials: user!.initials },
+          `Created group "${newGroupName.trim()}"`,
+          'Created',
+          'Group',
+          '',
+          newGroupName.trim()
+        );
+      }
+      setNewGroupName('');
+      setNewGroupDesc('');
+      setNewGroupMembers([]);
+    } catch (err: any) {
+      const { toast } = await import('sonner');
+      toast.error(err.message || 'Failed to save group');
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetGroup) return;
+    const target = deleteTargetGroup;
+    const targetId = target.id || (target as any)._id;
+    setIsDeleting(true);
+    try {
+      await groupService.delete(targetId);
+      setGroupsList(prev => prev.filter(g => (g.id !== targetId && (g as any)._id !== targetId)));
+      setStaffUsers(prev => prev.map(s => {
+        if (s.groupId === targetId) {
+          return { ...s, groupId: undefined };
+        }
+        return s;
+      }));
+      setDeleteTargetGroup(null);
+      const { toast } = await import('sonner');
+      toast.success(`Group "${target.name}" deleted successfully!`);
+      logActivity(
+        { id: userId!, name: user!.name, role: role!, initials: user!.initials },
+        `Deleted group "${target.name}"`,
+        'Deleted',
+        'Group',
+        '',
+        target.name
+      );
+    } catch (err: any) {
+      const { toast } = await import('sonner');
+      toast.error(err.message || 'Failed to delete group');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Server-aggregated performance data
+  const computedGroupsPerformance = useMemo(() => {
+    return performanceData.performance || [];
+  }, [performanceData]);
+
+  const topGroupId = performanceData.summary?.topGroupId || null;
+
+  const currentGroupPerf = useMemo(() => {
+    if (!selectedGroupMembers) return null;
+    const targetId = String(selectedGroupMembers.id || (selectedGroupMembers as any)._id);
+    return (performanceData.performance || []).find(
+      (p: any) => String(p.group?.id || p.group?._id) === targetId
+    );
+  }, [selectedGroupMembers, performanceData]);
 
   const handleChangeGroup = async (staffId: string, targetGroupId: string) => {
     const oldGroup = groupsList.find(g => (g.members || []).includes(staffId));
@@ -218,7 +298,7 @@ export default function AdminGroups() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-slate-900">{role === 'staff' ? 'Groups (View Only)' : 'Groups'}</h1>
         {role !== 'staff' && (
-          <button onClick={() => setCreateOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-brand-green text-white text-sm font-medium rounded-md hover:bg-brand-darkgreen active:scale-[0.98] transition-all">
+          <button onClick={handleOpenCreate} className="flex items-center gap-2 px-4 py-2 bg-brand-green text-white text-sm font-medium rounded-md hover:bg-brand-darkgreen active:scale-[0.98] transition-all">
             <Plus size={16} /> Create Group
           </button>
         )}
@@ -268,7 +348,7 @@ export default function AdminGroups() {
                     <td className="px-5 py-4 text-sm text-slate-600 font-medium">{(group.members || []).length} members</td>
                     <td className="px-5 py-4 text-sm text-slate-500">{group.createdAt}</td>
                     <td className="px-5 py-4" onClick={e => e.stopPropagation()}>
-                      <div className="flex gap-1">
+                      <div className="flex items-center gap-1">
                         <button
                           onClick={() => setViewGroup(group)}
                           className="p-1.5 rounded hover:bg-slate-100 text-brand-blue hover:text-blue-800 transition-colors"
@@ -276,6 +356,24 @@ export default function AdminGroups() {
                         >
                           <Eye size={15} />
                         </button>
+                        {role !== 'staff' && (
+                          <>
+                            <button
+                              onClick={() => handleOpenEdit(group)}
+                              className="p-1.5 rounded hover:bg-slate-100 text-amber-600 hover:text-amber-800 transition-colors"
+                              title="Edit Group"
+                            >
+                              <Pencil size={15} />
+                            </button>
+                            <button
+                              onClick={() => setDeleteTargetGroup(group)}
+                              className="p-1.5 rounded hover:bg-red-50 text-red-500 hover:text-red-700 transition-colors"
+                              title="Delete Group"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -303,7 +401,30 @@ export default function AdminGroups() {
                 </div>
                 <div className="flex justify-between items-center text-[10px] text-slate-400 border-t border-slate-50 pt-2">
                   <span>Created: {group.createdAt}</span>
-                  <span className="text-brand-green font-semibold">Tap to view members</span>
+                  <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                    <button
+                      onClick={() => setViewGroup(group)}
+                      className="text-brand-green font-semibold hover:underline"
+                    >
+                      View
+                    </button>
+                    {role !== 'staff' && (
+                      <>
+                        <button
+                          onClick={() => handleOpenEdit(group)}
+                          className="text-amber-600 font-semibold hover:underline"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => setDeleteTargetGroup(group)}
+                          className="text-red-600 font-semibold hover:underline"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -391,7 +512,7 @@ export default function AdminGroups() {
               <div>
                 <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Total Leads Handled</span>
                 <span className="text-lg font-extrabold text-slate-800 mt-0.5 block">
-                  {leads.filter(l => l.assignedTo && matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)).length} Leads
+                  {performanceData.summary?.totalLeadsHandled ?? 0} Leads
                 </span>
               </div>
             </div>
@@ -402,7 +523,7 @@ export default function AdminGroups() {
               <div>
                 <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Conversions Closed</span>
                 <span className="text-lg font-extrabold text-slate-800 mt-0.5 block">
-                  {leads.filter(l => l.status === 'Customer' && matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)).length} Customers
+                  {performanceData.summary?.conversionsClosed ?? 0} Customers
                 </span>
               </div>
             </div>
@@ -413,7 +534,7 @@ export default function AdminGroups() {
               <div>
                 <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Qualified Leads</span>
                 <span className="text-lg font-extrabold text-slate-800 mt-0.5 block">
-                  {leads.filter(l => l.status === 'Qualified' && matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)).length} Qualified
+                  {performanceData.summary?.qualifiedLeads ?? 0} Qualified
                 </span>
               </div>
             </div>
@@ -551,51 +672,61 @@ export default function AdminGroups() {
       )}
 
       {/* Create/Edit Group Modal */}
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create Group" size="md" footer={
-        <>
-          <button onClick={() => setCreateOpen(false)} className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
-          <button onClick={async () => {
-            if (!newGroupName.trim()) {
-              const { toast } = await import('sonner');
-              toast.error('Group Name is required.');
-              return;
-            }
-            try {
-              const res = await groupService.create({ name: newGroupName.trim(), description: newGroupDesc.trim(), members: newGroupMembers });
-              setGroupsList(prev => [...prev, res.data]);
-              setNewGroupName(''); setNewGroupDesc(''); setNewGroupMembers([]);
-              setCreateOpen(false);
-              const { toast } = await import('sonner');
-              toast.success('Group created successfully!');
-              logActivity({ id: userId!, name: user!.name, role: role!, initials: user!.initials }, `Created group "${newGroupName.trim()}"`, 'Created', 'Group', '', newGroupName.trim());
-            } catch (err: any) {
-              const { toast } = await import('sonner');
-              toast.error(err.message || 'Failed to create group');
-            }
-          }} className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all">Save Group</button>
-        </>
-      }>
+      <Modal
+        open={createOpen}
+        onClose={() => { setCreateOpen(false); setEditingGroup(null); }}
+        title={editingGroup ? `Edit Group — ${editingGroup.name}` : 'Create Group'}
+        size="md"
+        footer={
+          <>
+            <button
+              onClick={() => { setCreateOpen(false); setEditingGroup(null); }}
+              className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSaveGroup}
+              className="px-4 py-2 bg-brand-green text-white rounded-md text-sm hover:bg-brand-darkgreen active:scale-[0.98] transition-all font-medium"
+            >
+              {editingGroup ? 'Update Group' : 'Save Group'}
+            </button>
+          </>
+        }
+      >
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Group Name <span className="text-red-500 font-bold">*</span>
             </label>
-            <input type="text" placeholder="e.g., Sales Team C" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all" />
+            <input
+              type="text"
+              placeholder="e.g., Sales Team C"
+              value={newGroupName}
+              onChange={e => setNewGroupName(e.target.value)}
+              className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Description</label>
-            <textarea placeholder="Describe the group..." rows={3} value={newGroupDesc} onChange={e => setNewGroupDesc(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-y min-h-[80px]" />
+            <textarea
+              placeholder="Describe the group..."
+              rows={3}
+              value={newGroupDesc}
+              onChange={e => setNewGroupDesc(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm focus:border-brand-green focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-y min-h-[80px]"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Select Members</label>
             <div className="border border-slate-200 rounded-md max-h-[240px] overflow-y-auto divide-y divide-slate-50">
-              {unassignedStaff.length === 0 ? (
+              {selectableStaffForModal.length === 0 ? (
                 <p className="p-4 text-center text-xs text-slate-400 italic">
-                  All staff members are currently assigned to groups.
+                  {editingGroup ? 'No active members available.' : 'All active staff members are currently assigned to groups.'}
                 </p>
               ) : (
-                unassignedStaff.map(staff => {
-                  const sId = staff.id || (staff as any)._id;
+                selectableStaffForModal.map(staff => {
+                  const sId = String(staff.id || (staff as any)._id);
                   return (
                     <label key={sId} className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 cursor-pointer transition-colors">
                       <input
@@ -615,6 +746,44 @@ export default function AdminGroups() {
               )}
             </div>
           </div>
+        </div>
+      </Modal>
+
+      {/* Delete Group Confirmation Modal */}
+      <Modal
+        open={!!deleteTargetGroup}
+        onClose={() => !isDeleting && setDeleteTargetGroup(null)}
+        title="Confirm Delete Group"
+        size="sm"
+        footer={
+          <>
+            <button
+              disabled={isDeleting}
+              onClick={() => setDeleteTargetGroup(null)}
+              className="px-4 py-2 border border-slate-200 rounded-md text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={isDeleting}
+              onClick={handleConfirmDelete}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-semibold shadow-sm transition-all flex items-center gap-1.5"
+            >
+              {isDeleting ? 'Deleting...' : 'Delete Group'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">
+            <p className="font-bold">Warning: This action cannot be undone.</p>
+            <p className="mt-1">
+              Are you sure you want to delete group <strong>"{deleteTargetGroup?.name}"</strong>?
+            </p>
+          </div>
+          <p className="text-xs text-slate-500">
+            All staff members ({(deleteTargetGroup?.members || []).length} members) will be automatically unassigned from this group and moved back to unassigned staff.
+          </p>
         </div>
       </Modal>
 
@@ -679,33 +848,14 @@ export default function AdminGroups() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {visibleStaff.map(staff => {
-                      const staffLeads = leads.filter(l =>
-                        l.assignedTo === staff.id &&
-                        matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)
+                      const staffId = String(staff.id || (staff as any)._id);
+                      const mStat = (currentGroupPerf?.memberStats || []).find(
+                        (ms: any) => String(ms.id) === staffId || String(ms._id) === staffId
                       );
-                      const totalLeads = staffLeads.length;
-
-                      const staffPlotBookings = plots.filter(p =>
-                        (p.status === 'Booked' || p.status === 'Registered') &&
-                        (
-                          String(p.assignedTo) === String(staff.id) ||
-                          String((p.bookedBy as any)?.staffId) === String(staff.id) ||
-                          staffLeads.some(l => String(l.id || (l as any)._id) === String((p.bookedBy as any)?.leadId))
-                        ) &&
-                        matchMonthYear(p.bookingDate || p.registrationDate || (p as any).createdAt, reportYear, reportMonth)
-                      ).length;
-
-                      const convertedCount = staffLeads.filter(l => l.status === 'Customer').length;
-                      const memberBookings = Math.max(staffPlotBookings, convertedCount);
-
-                      const totalFollowUps = staffLeads.reduce((acc, lead) => {
-                        const matching = (lead.followUps || []).filter(f =>
-                          matchMonthYear(f.date || (f as any).createdAt, reportYear, reportMonth)
-                        );
-                        return acc + (matching.length || (lead.followUps?.length && (reportYear === 'All' && reportMonth === 'All') ? lead.followUps.length : 0));
-                      }, 0);
-
-                      const staffQualified = staffLeads.filter(l => l.status === 'Qualified').length;
+                      const totalLeads = mStat ? mStat.totalLeads : 0;
+                      const memberBookings = mStat ? mStat.memberBookings : 0;
+                      const totalFollowUps = mStat ? mStat.totalFollowUps : 0;
+                      const staffQualified = mStat ? mStat.staffQualified : 0;
 
                       return (
                         <tr key={staff.id} className="hover:bg-slate-50">

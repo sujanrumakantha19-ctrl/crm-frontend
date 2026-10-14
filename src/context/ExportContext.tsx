@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode, type Dispatch, type SetStateAction } from 'react';
+import { API_BASE } from '../lib/api';
 
 export interface ExportInfo {
   endpoint: string;
@@ -89,7 +90,6 @@ export function ExportProvider({ children }: { children: ReactNode }) {
     }
 
     const params = new URLSearchParams(current.params);
-    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1';
     const url = `${API_BASE}${current.endpoint}${params.toString() ? `?${params}` : ''}`;
 
     const dateStr = new Date().toISOString().split('T')[0];

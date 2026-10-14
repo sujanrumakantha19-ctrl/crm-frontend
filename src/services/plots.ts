@@ -11,8 +11,11 @@ export const plotService = {
   getPendingApproval(id: string) {
     return api.get<PlotApproval>(`/plots/${id}/pending-approval`);
   },
-  getByProject(projectId: string) {
-    return api.get<Plot[]>(`/plots`, { projectId, limit: 500 });
+  getByProject(projectId: string, params?: { page?: number; limit?: number; search?: string; status?: string; all?: string }) {
+    return api.get<Plot[]>(`/plots/project/${projectId}`, params);
+  },
+  getCustomerBookings(params: { leadId?: string; leadIds?: string; phone?: string; plotId?: string; status?: string }) {
+    return api.get<Plot[]>('/plots/customer-bookings', params);
   },
   getByStatus(status: string, params?: Record<string, string | number | undefined>) {
     return api.get<Plot[]>(`/plots/status/${status}`, params);

@@ -12,6 +12,7 @@ import { taskAssigneeService } from '@/lib/taskAssignee';
 import { CardSkeletonGrid, InfiniteScrollSpinner } from '@/components/shared/SkeletonLoader';
 import { logActivity } from '@/lib/activityLogger';
 import { useExportContext } from '@/context/ExportContext';
+import { formatDate } from '@/lib/utils';
 import { taskService, projectService, userService, leadService } from '@/services';
 import type { Task, TaskStatus, TaskPriority, User, Project, Lead } from '@/types';
 
@@ -241,13 +242,8 @@ export default function AdminTasks() {
 
   const getFormattedDateString = (dateVal: any): string => {
     if (!dateVal) return '';
-    try {
-      const d = new Date(dateVal);
-      if (isNaN(d.getTime())) return '';
-      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-    } catch {
-      return '';
-    }
+    const formatted = formatDate(dateVal);
+    return formatted === '—' ? '' : formatted;
   };
 
   // Sort tasks newest first
