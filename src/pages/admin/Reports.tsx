@@ -1,9 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, ChevronLeft, ChevronRight, Building2, Users, Home, TrendingUp, Filter, RotateCcw } from 'lucide-react';
 import { useExportContext } from '@/context/ExportContext';
 import { reportService } from '@/services';
-import type { OperationsMetricsData } from '@/services/report';
+import type {
+  OperationsMetricsData,
+  ReportSummaryData,
+  ProjectReportRow,
+  StaffReportRow,
+  AttendanceReportRow,
+  LeadsTrendRow,
+  LeadContributionRow,
+  ChannelPartnerPerformanceRow,
+} from '@/services/report';
 import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
@@ -47,6 +57,31 @@ const initialFilters: FilterState = {
 
 type TabType = 'projects' | 'staff' | 'attendance' | 'channel-partner-performance' | 'leads-trend' | 'lead-contribution' | 'operations';
 
+type ReportRow = ProjectReportRow &
+  StaffReportRow &
+  AttendanceReportRow &
+  LeadsTrendRow &
+  LeadContributionRow &
+  ChannelPartnerPerformanceRow & {
+    id?: string;
+    createdAt?: string;
+    totalSqFt?: number;
+    plotCount?: number;
+    initials?: string;
+    designation?: string;
+    loanConversions?: number;
+    cashConversions?: number;
+    open?: number;
+    date?: string;
+    sourceType?: string;
+    latestDate?: string;
+    company?: string;
+    location?: string;
+    checkIn?: string;
+    checkOut?: string;
+    duration?: string;
+  };
+
 export default function AdminReports() {
   const navigate = useNavigate();
   const { setExportInfo, triggerDownload } = useExportContext();
@@ -55,6 +90,11 @@ export default function AdminReports() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+
+  // Request generation trackers to prevent stale race conditions
+  const tabReqIdRef = useRef(0);
+  const summaryReqIdRef = useRef(0);
+  const opsReqIdRef = useRef(0);
 
   // Tab-wise filter states
   const [filters, setFilters] = useState<Record<TabType, FilterState>>({
@@ -70,55 +110,82 @@ export default function AdminReports() {
   const currentFilter = filters[activeTab];
 
   // Summary cards
-  const [summary, setSummary] = useState<any>(null);
+  const [summary, setSummary] = useState<ReportSummaryData | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
   const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
   const [opsLoading, setOpsLoading] = useState(false);
+  const [opsError, setOpsError] = useState<string | null>(null);
 
   // Tab data (only current page)
-  const [tabData, setTabData] = useState<any[]>([]);
+  const [tabData, setTabData] = useState<ReportRow[]>([]);
   const [tabLoading, setTabLoading] = useState(false);
+  const [tabError, setTabError] = useState<string | null>(null);
 
   // Fetch summary when active tab's filter changes
   const fetchSummary = useCallback(async (f: FilterState) => {
+    const reqId = ++summaryReqIdRef.current;
     setSummaryLoading(true);
+    setSummaryError(null);
     try {
-      const res: any = await reportService.getSummary({
+      const res = await reportService.getSummary({
+        reportView: 'admin',
         month: f.month || undefined,
         year: f.year || undefined,
         dateFrom: f.dateFrom || undefined,
         dateTo: f.dateTo || undefined,
       });
-      setSummary(res.data || res);
-    } catch {
-      /* ignore */
+      if (reqId === summaryReqIdRef.current) {
+        setSummary(res.data);
+      }
+    } catch (err: unknown) {
+      if (reqId === summaryReqIdRef.current) {
+        setSummary(null);
+        setSummaryError(err instanceof Error ? err.message : 'Failed to load summary');
+      }
     } finally {
-      setSummaryLoading(false);
+      if (reqId === summaryReqIdRef.current) {
+        setSummaryLoading(false);
+      }
     }
   }, []);
 
   const fetchOperationsMetrics = useCallback(async (f: FilterState) => {
+    const reqId = ++opsReqIdRef.current;
     setOpsLoading(true);
+    setOpsError(null);
     try {
-      const res: any = await reportService.getOperationsMetrics({
+      const res = await reportService.getOperationsMetrics({
+        reportView: 'admin',
         month: f.month || undefined,
         year: f.year || undefined,
         dateFrom: f.dateFrom || undefined,
         dateTo: f.dateTo || undefined,
       });
-      setOpsMetrics(res.data || res);
-    } catch {
-      setOpsMetrics(null);
+      if (reqId === opsReqIdRef.current) {
+        setOpsMetrics(res.data);
+      }
+    } catch (err: unknown) {
+      if (reqId === opsReqIdRef.current) {
+        setOpsMetrics(null);
+        setOpsError(err instanceof Error ? err.message : 'Failed to load operations metrics');
+      }
     } finally {
-      setOpsLoading(false);
+      if (reqId === opsReqIdRef.current) {
+        setOpsLoading(false);
+      }
     }
   }, []);
 
   // Fetch tab data whenever tab, page, or filters change
   const fetchTabData = useCallback(async (tab: TabType, p: number, f: FilterState) => {
+    const reqId = ++tabReqIdRef.current;
     setTabLoading(true);
+    setTabError(null);
     try {
       const query = {
+        reportView: 'admin',
         page: p,
         limit: PER_PAGE,
         month: f.month || undefined,
@@ -127,45 +194,85 @@ export default function AdminReports() {
         dateTo: f.dateTo || undefined,
       };
 
-      let res: any;
-      if (tab === 'projects') res = await reportService.getProjects(query);
-      else if (tab === 'staff') res = await reportService.getStaff(query);
-      else if (tab === 'attendance') res = await reportService.getAttendance(query);
-      else if (tab === 'channel-partner-performance') res = await reportService.getChannelPartnerPerformance(query);
-      else if (tab === 'leads-trend') res = await reportService.getLeadsTrend(query);
-      else if (tab === 'lead-contribution') res = await reportService.getLeadContribution(query);
+      let resData: unknown[] = [];
+      let resTotal = 0;
 
-      setTabData(res.data || []);
-      const t = res.total ?? 0;
-      setTotal(t);
-      setTotalPages(Math.max(1, Math.ceil(t / PER_PAGE)));
-    } catch {
-      setTabData([]);
-      setTotalPages(1);
+      if (tab === 'projects') {
+        const res = await reportService.getProjects(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      } else if (tab === 'staff') {
+        const res = await reportService.getStaff(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      } else if (tab === 'attendance') {
+        const res = await reportService.getAttendance(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      } else if (tab === 'channel-partner-performance') {
+        const res = await reportService.getChannelPartnerPerformance(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      } else if (tab === 'leads-trend') {
+        const res = await reportService.getLeadsTrend(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      } else if (tab === 'lead-contribution') {
+        const res = await reportService.getLeadContribution(query);
+        resData = res.data || [];
+        resTotal = res.total ?? 0;
+      }
+
+      if (reqId === tabReqIdRef.current) {
+        setTabData(resData as ReportRow[]);
+        setTotal(resTotal);
+        const calculatedTotalPages = Math.max(1, Math.ceil(resTotal / PER_PAGE));
+        setTotalPages(calculatedTotalPages);
+        if (p > calculatedTotalPages) {
+          setPage(calculatedTotalPages);
+        }
+      }
+    } catch (err: unknown) {
+      if (reqId === tabReqIdRef.current) {
+        setTabData([]);
+        setTotalPages(1);
+        setTabError(err instanceof Error ? err.message : 'Failed to load report data');
+      }
     } finally {
-      setTabLoading(false);
+      if (reqId === tabReqIdRef.current) {
+        setTabLoading(false);
+      }
     }
   }, []);
 
+  // Summary only refetches when filters change or activeTab changes away from operations
   useEffect(() => {
-    if (activeTab === 'operations') {
-      fetchOperationsMetrics(currentFilter);
-      return;
-    }
+    if (activeTab === 'operations') return;
     fetchSummary(currentFilter);
+  }, [activeTab, currentFilter, fetchSummary]);
+
+  // Operations metrics refetch when on operations tab and filters change
+  useEffect(() => {
+    if (activeTab !== 'operations') return;
+    fetchOperationsMetrics(currentFilter);
+  }, [activeTab, currentFilter, fetchOperationsMetrics]);
+
+  // Paginated tab data refetches when activeTab, page, or currentFilter changes
+  useEffect(() => {
+    if (activeTab === 'operations') return;
     fetchTabData(activeTab, page, currentFilter);
-  }, [activeTab, page, currentFilter, fetchSummary, fetchTabData, fetchOperationsMetrics]);
+  }, [activeTab, page, currentFilter, fetchTabData]);
 
   useEffect(() => {
     const f = filters[activeTab];
-    const params: Record<string, string> = { tab: activeTab };
+    const params: Record<string, string> = { tab: activeTab, reportView: 'admin' };
     if (f.month) params.month = f.month;
     if (f.year) params.year = f.year;
     if (f.dateFrom) params.dateFrom = f.dateFrom;
     if (f.dateTo) params.dateTo = f.dateTo;
     setExportInfo({
       endpoint: '/export/reports',
-      filename: 'report',
+      filename: `report-${activeTab}`,
       params,
     });
   }, [activeTab, filters, setExportInfo]);
@@ -174,7 +281,7 @@ export default function AdminReports() {
     setFilters(prev => {
       const updated = { ...prev[activeTab], [key]: value };
 
-      // Auto-compute dateFrom / dateTo if month & year selected
+      // Mutual clearing between month/year and custom dateFrom/dateTo
       if (key === 'month' || key === 'year') {
         const m = key === 'month' ? value : updated.month;
         const y = key === 'year' ? value : updated.year;
@@ -184,7 +291,13 @@ export default function AdminReports() {
           const lastDay = new Date(yNum, mNum, 0).getDate();
           updated.dateFrom = `${yNum}-${String(mNum).padStart(2, '0')}-01`;
           updated.dateTo = `${yNum}-${String(mNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        } else {
+          updated.dateFrom = '';
+          updated.dateTo = '';
         }
+      } else if (key === 'dateFrom' || key === 'dateTo') {
+        updated.month = '';
+        updated.year = '';
       }
 
       return {
@@ -207,102 +320,10 @@ export default function AdminReports() {
     setActiveTab(tab);
     setPage(1);
     setTabData([]);
+    setTabError(null);
   };
 
-  const exportCSV = () => {
-    let headers: string[] = [];
-    let rows: string[][] = [];
-
-    if (activeTab === 'projects') {
-      headers = ['Project', 'Created Date', 'Location', 'Status', 'Total Sq. Ft.', 'Total Plots', 'Booked', 'Registered', 'Available', 'Leads', 'Loan', 'Cash'];
-      rows = tabData.map(p => [
-        p.name,
-        p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : '-',
-        p.location,
-        p.status,
-        p.totalSqFt ? `${Math.round(p.totalSqFt).toLocaleString()} sq ft` : '-',
-        String(p.plotCount || 0),
-        String(p.booked || 0),
-        String(p.registered || 0),
-        String(p.available || 0),
-        String(p.leadCount || 0),
-        String(p.loanBookings || 0),
-        String(p.cashBookings || 0),
-      ]);
-    } else if (activeTab === 'attendance') {
-      headers = ['Staff', 'Date', 'Status', 'Location', 'Project', 'Check In', 'Check Out', 'Duration', 'Role'];
-      rows = tabData.map(a => [
-        a.staffName,
-        a.date,
-        a.status,
-        a.location || '-',
-        a.project || '-',
-        a.checkIn || '-',
-        a.checkOut || '-',
-        a.duration || '-',
-        a.role || '-',
-      ]);
-    } else if (activeTab === 'staff') {
-      headers = ['Staff', 'Designation', 'Assigned Leads', 'Converted', 'Loan', 'Cash', 'Open'];
-      rows = tabData.map(s => [
-        s.name,
-        s.designation || '',
-        String(s.assignedLeads || 0),
-        String(s.converted || 0),
-        String(s.loanConversions || 0),
-        String(s.cashConversions || 0),
-        String(s.open || 0),
-      ]);
-    } else if (activeTab === 'leads-trend') {
-      headers = ['Date', 'Total Leads', 'Open Leads', 'Qualified Leads', 'Plots Booked', 'Loan Bookings', 'Cash Bookings', 'Conversion Rate (%)'];
-      rows = tabData.map(t => [
-        t.date || '-',
-        String(t.totalLeads || 0),
-        String(t.openLeads || 0),
-        String(t.qualifiedLeads || 0),
-        String(t.plotsBooked || 0),
-        String(t.loanBookings || 0),
-        String(t.cashBookings || 0),
-        `${t.conversionRate || 0}%`,
-      ]);
-    } else if (activeTab === 'lead-contribution') {
-      headers = ['Source / Channel', 'Recent Lead Date', 'Total Leads', 'Converted Customers', 'Plots Booked', 'Loan Bookings', 'Cash Bookings', 'Conversion Rate (%)'];
-      rows = tabData.map(c => [
-        c.sourceType || 'Direct / Other',
-        c.latestDate || '-',
-        String(c.totalLeads || 0),
-        String(c.converted || 0),
-        String(c.plotsBooked || 0),
-        String(c.loanBookings || 0),
-        String(c.cashBookings || 0),
-        `${c.conversionRate || 0}%`,
-      ]);
-    } else if (activeTab === 'channel-partner-performance') {
-      headers = ['Channel Partner', 'Phone', 'Company', 'Total Leads', 'Converted', 'Plots Booked', 'Loan', 'Cash', 'Conversion Rate (%)'];
-      rows = tabData.map(cp => [
-        cp.name || '-',
-        cp.phone || '-',
-        cp.company || '-',
-        String(cp.totalLeads || 0),
-        String(cp.converted || 0),
-        String(cp.plotsBooked || 0),
-        String(cp.loanBookings || 0),
-        String(cp.cashBookings || 0),
-        `${cp.conversionRate || 0}%`,
-      ]);
-    }
-
-    const csv = [headers, ...rows].map(r => r.map(c => `"${(c || '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `report-${activeTab}-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const s = summary || {};
+  const s = summary || ({} as Partial<ReportSummaryData>);
   const isFiltered = !!(currentFilter.month || currentFilter.year || currentFilter.dateFrom || currentFilter.dateTo);
 
   const getTabTitle = () => {
@@ -334,6 +355,19 @@ export default function AdminReports() {
           </button>
         )}
       </div>
+
+      {/* Summary Error Banner */}
+      {activeTab !== 'operations' && summaryError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 flex items-center justify-between text-xs">
+          <span>Failed to load summary: {summaryError}</span>
+          <button
+            onClick={() => fetchSummary(currentFilter)}
+            className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded font-semibold"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Summary Cards */}
       {activeTab !== 'operations' && (
@@ -490,18 +524,63 @@ export default function AdminReports() {
       </div>
 
       {activeTab === 'operations' && (
-        <OperationsMetricsCards
-          metrics={opsMetrics}
-          loading={opsLoading}
-          role={role}
-          onNavigate={navigate}
-        />
+        opsError ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-center justify-between">
+            <div>
+              <p className="font-semibold text-sm">Failed to load operations metrics</p>
+              <p className="text-xs text-red-600 mt-0.5">{opsError}</p>
+            </div>
+            <button
+              onClick={() => fetchOperationsMetrics(currentFilter)}
+              className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-800 rounded text-xs font-semibold"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {Boolean(opsMetrics?.unknownBookingDateCount) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800 text-xs flex items-center justify-between">
+                <span>
+                  <strong>Note:</strong> {opsMetrics?.unknownBookingDateCount} historical booking(s) do not have a verifiable booking date and are excluded from date-filtered metrics.
+                </span>
+              </div>
+            )}
+            <OperationsMetricsCards
+              metrics={opsMetrics}
+              loading={opsLoading}
+              role={role || 'admin'}
+              onNavigate={navigate}
+            />
+          </div>
+        )
       )}
 
       {/* Table */}
       {activeTab !== 'operations' && (tabLoading ? (
         <div className="flex items-center justify-center h-40">
           <div className="w-7 h-7 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : tabError ? (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-sm">Failed to load report data</p>
+            <p className="text-xs text-red-600 mt-0.5">{tabError}</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={resetFilter}
+              className="px-3 py-1.5 bg-white border border-red-200 hover:bg-red-50 text-red-700 rounded text-xs font-medium"
+            >
+              Reset Filters
+            </button>
+            <button
+              onClick={() => fetchTabData(activeTab, page, currentFilter)}
+              className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-800 rounded text-xs font-semibold"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -625,7 +704,7 @@ export default function AdminReports() {
                           <StatusBadge status={a.status} />
                         </td>
                         <td className="px-4 py-3 text-slate-600">{a.location || '-'}</td>
-                        <td className="px-4 py-3 text-slate-600">{a.project || '-'}</td>
+                        <td className="px-4 py-3 text-slate-600">{a.projectName || a.project || '-'}</td>
                         <td className="px-4 py-3 text-slate-600">{a.checkIn || '-'}</td>
                         <td className="px-4 py-3 text-slate-600">{a.checkOut || '-'}</td>
                         <td className="px-4 py-3 text-slate-600">{a.duration || '-'}</td>
@@ -763,7 +842,7 @@ export default function AdminReports() {
                       <span className="text-slate-400">Location:</span> {a.location || '-'}
                     </div>
                     <div>
-                      <span className="text-slate-400">Project:</span> {a.project || '-'}
+                      <span className="text-slate-400">Project:</span> {a.projectName || a.project || '-'}
                     </div>
                     <div>
                       <span className="text-slate-400">Check In:</span> {a.checkIn || '-'}

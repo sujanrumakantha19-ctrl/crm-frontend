@@ -787,7 +787,7 @@ export default function StaffReports() {
           <OperationsMetricsCards
             metrics={opsMetrics}
             loading={opsLoading}
-            role={role}
+            role={role || 'staff'}
             onNavigate={navigate}
           />
         </div>

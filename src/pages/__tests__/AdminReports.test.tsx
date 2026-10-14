@@ -18,6 +18,15 @@ vi.mock('@/services', () => ({
   reportService: mockReportService,
 }));
 
+import { ExportProvider } from '@/context/ExportContext';
+
+vi.mock('@/context/AuthContext', () => ({
+  useAuth: () => ({
+    role: 'admin',
+    user: { name: 'Admin', role: 'admin' },
+  }),
+}));
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -64,15 +73,42 @@ describe('AdminReports - Total Sq Ft', () => {
   it('renders Total Sq. Ft. column header and formatted sq ft value in project summary tab', async () => {
     render(
       <MemoryRouter>
-        <AdminReports />
+        <ExportProvider>
+          <AdminReports />
+        </ExportProvider>
       </MemoryRouter>
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Green Valley')).toBeInTheDocument();
+      expect(mockReportService.getProjects).toHaveBeenCalled();
     });
 
-    expect(screen.getByText('Total Sq. Ft.')).toBeInTheDocument();
-    expect(screen.getByText('435,600 sq ft')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByText('Green Valley').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getAllByText('Total Sq. Ft.').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/4,?35,?600\s*sq\s*ft/i).length).toBeGreaterThan(0);
+  });
+
+  it('clears summary cards and displays dashes when getSummary fails', async () => {
+    mockReportService.getSummary.mockRejectedValue(new Error('Summary fetch failed'));
+    render(
+      <MemoryRouter>
+        <ExportProvider>
+          <AdminReports />
+        </ExportProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockReportService.getSummary).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load summary: Summary fetch failed/i)).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 });

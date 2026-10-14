@@ -10,6 +10,7 @@ export interface OperationsMetricsData {
     partiallyPaid: number;
     advancePaid: number;
     advanceNotPaid: number;
+    fullyPaid?: number;
   };
 }
 
@@ -37,7 +38,7 @@ export function OperationsMetricsCards({
     totalCustomers: 0,
     registrationPending: 0,
     totalBookings: 0,
-    bookingPayments: { notPaid: 0, partiallyPaid: 0, advancePaid: 0, advanceNotPaid: 0 },
+    bookingPayments: { notPaid: 0, partiallyPaid: 0, advancePaid: 0, advanceNotPaid: 0, fullyPaid: 0 },
   };
 
   const totalCustomersCount = totalCustomers !== undefined ? totalCustomers : (m.totalCustomers ?? 0);
@@ -159,6 +160,10 @@ export function OperationsMetricsCards({
             <div className="flex items-center justify-between gap-2">
               <span className="text-slate-500">Advance Not Paid</span>
               <span className="font-bold text-slate-900">{m.bookingPayments.advanceNotPaid}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-500">Fully Paid</span>
+              <span className="font-bold text-slate-900">{m.bookingPayments.fullyPaid ?? 0}</span>
             </div>
           </div>
         )}
