@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, ChevronLeft, ChevronRight, Building2, Users, Home, TrendingUp, Filter, RotateCcw } from 'lucide-react';
+import { Download, Building2, Users, Home, TrendingUp, Filter, RotateCcw } from 'lucide-react';
 import { useExportContext } from '@/context/ExportContext';
 import { reportService } from '@/services';
 import type {
@@ -15,6 +15,7 @@ import type {
   ChannelPartnerPerformanceRow,
 } from '@/services/report';
 import { OperationsMetricsCards } from '@/components/shared/OperationsMetricsCards';
+import { PaginationControls } from '@/components/shared/PaginationControls';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { NameTag } from '@/components/shared/NameTag';
 import { Avatar } from '@/components/shared/Avatar';
@@ -985,20 +986,30 @@ export default function AdminReports() {
         </>
       ))}
 
-      {/* Backend-driven Pagination */}
+      {/* Backend-driven React Pagination Controls */}
       {activeTab !== 'operations' && totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-sm text-slate-600">
-            Page <span className="font-semibold text-slate-900">{page}</span> of <span className="font-semibold text-slate-900">{totalPages}</span>
-            <span className="text-slate-400 ml-2">({total} total)</span>
-          </span>
-          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="p-2 border border-slate-200 rounded-md disabled:opacity-30 hover:bg-slate-50">
-            <ChevronRight size={16} />
-          </button>
-        </div>
+        <PaginationControls
+          currentPage={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+          totalCount={total}
+          perPage={PER_PAGE}
+          itemName={
+            activeTab === 'projects'
+              ? 'projects'
+              : activeTab === 'staff'
+              ? 'staff members'
+              : activeTab === 'attendance'
+              ? 'attendance records'
+              : activeTab === 'channel-partner-performance'
+              ? 'partners'
+              : activeTab === 'leads-trend'
+              ? 'trend entries'
+              : activeTab === 'lead-contribution'
+              ? 'sources'
+              : 'records'
+          }
+        />
       )}
     </div>
   );
