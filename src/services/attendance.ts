@@ -25,7 +25,7 @@ export const attendanceService = {
   getDaily(params?: Record<string, string | number | undefined>) {
     return api.get<{ data: DailyAttendanceRecord[]; summary: any; pagination: any }>('/attendance/daily', params);
   },
-  setOverride(data: { staffId: string; date: string; status: string; notes?: string }) {
+  setOverride(data: { staffId: string; date: string; status: string; notes?: string; confirmActiveOverride?: boolean }) {
     return api.post('/attendance/override', data);
   },
   create(data: Partial<AttendanceRecord>) {

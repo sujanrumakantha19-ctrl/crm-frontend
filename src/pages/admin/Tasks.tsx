@@ -296,8 +296,8 @@ export default function AdminTasks() {
 
   const handleUpdateStatus = async (taskId: string, newStatus: TaskStatus) => {
     const existing = taskList.find(t => (t.id || (t as any)._id) === taskId);
-    if (existing && existing.status === 'Done') {
-      toast.error('Completed (Done) tasks cannot be edited.');
+    if (existing && existing.status === 'Done' && role === 'staff') {
+      toast.error('Completed (Done) tasks cannot be edited by staff.');
       return;
     }
     try {
@@ -626,7 +626,17 @@ export default function AdminTasks() {
                 {taskModal.status === 'Done' ? (
                   <div className="mt-1 flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5 text-emerald-800 text-sm font-semibold">
                     <span>Done (Completed)</span>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-bold uppercase">Locked</span>
+                    {role === 'admin' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStatus(taskModal.id || (taskModal as any)._id, 'In Progress')}
+                        className="text-xs bg-brand-green text-white px-2.5 py-1 rounded hover:bg-brand-darkgreen transition-colors font-medium"
+                      >
+                        Reopen Task
+                      </button>
+                    ) : (
+                      <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-bold uppercase">Locked</span>
+                    )}
                   </div>
                 ) : (
                   <select
@@ -637,7 +647,7 @@ export default function AdminTasks() {
                     <option value="To Do">To Do</option>
                     <option value="In Progress">In Progress</option>
                     <option value="In Review">In Review</option>
-                    <option value="Done">Done</option>
+                    {role === 'admin' && <option value="Done">Done</option>}
                   </select>
                 )}
               </div>
@@ -773,6 +783,7 @@ export default function AdminTasks() {
                 <input
                   type="date"
                   value={dueDate}
+                  min={new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}
                   onChange={e => setDueDate(e.target.value)}
                   className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none transition-all"
                 />

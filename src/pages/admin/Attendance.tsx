@@ -6,6 +6,7 @@ import { PaginationControls } from '@/components/shared/PaginationControls';
 import { NameTag } from '@/components/shared/NameTag';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { Modal } from '@/components/shared/Modal';
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { SearchDropdown } from '@/components/shared/SearchDropdown';
 import { userService, attendanceService } from '@/services';
 import type { User as UserType } from '@/types';
@@ -454,36 +455,55 @@ export default function AdminAttendance() {
 
   // Allow admins to persist Absent / Half Day / Present for a staff member on a date (issue 28).
   const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
+  const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{ rec: any; newStatus: string } | null>(null);
 
-  const handleStatusChange = async (rec: any, newStatus: string) => {
+  const handleStatusChange = async (rec: any, newStatus: string, confirmed = false) => {
     if (!newStatus || newStatus === rec.status) return;
+
+    const isCheckedIn = (rec.checkIn && rec.checkIn !== '-') && (!rec.checkOut || rec.checkOut === '-');
+    if (newStatus === 'Absent' && isCheckedIn && !confirmed) {
+      setActiveOverrideConfirm({ rec, newStatus });
+      return;
+    }
+
     setSavingStatusId(rec.id);
     try {
-      const isSynthetic = String(rec.id).startsWith('absent-') || String(rec.id).startsWith('off-') || String(rec.id).startsWith('future-');
-      if (isSynthetic) {
-        // Fabricated absent/off/future row -> create a real persisted record.
-        await attendanceService.create({
+      if (isCheckedIn && confirmed) {
+        // Daily override only — do not corrupt running punch session
+        await attendanceService.setOverride({
           staffId: rec.staffId,
-          staffName: rec.staffName,
           date: rec.date,
           status: newStatus,
-          checkIn: '-',
-          checkOut: '-',
-          duration: '-',
-          activityType: 'Office',
-          role: rec.role || 'Sales Executive',
+          confirmActiveOverride: true,
+          notes: `Admin manually overrode active checked-in staff to ${newStatus}`,
         });
       } else {
-        await attendanceService.update(rec.id, { status: newStatus });
-      }
+        const isSynthetic = String(rec.id).startsWith('absent-') || String(rec.id).startsWith('off-') || String(rec.id).startsWith('future-');
+        if (isSynthetic) {
+          // Fabricated absent/off/future row -> create a real persisted record.
+          await attendanceService.create({
+            staffId: rec.staffId,
+            staffName: rec.staffName,
+            date: rec.date,
+            status: newStatus,
+            checkIn: '-',
+            checkOut: '-',
+            duration: '-',
+            activityType: 'Office',
+            role: rec.role || 'Sales Executive',
+          });
+        } else {
+          await attendanceService.update(rec.id, { status: newStatus });
+        }
 
-      // Also persist daily override audit record so daily engine and exports respect it
-      await attendanceService.setOverride({
-        staffId: rec.staffId,
-        date: rec.date,
-        status: newStatus,
-        notes: `Admin manually set status to ${newStatus}`,
-      }).catch(() => {});
+        // Also persist daily override audit record so daily engine and exports respect it
+        await attendanceService.setOverride({
+          staffId: rec.staffId,
+          date: rec.date,
+          status: newStatus,
+          notes: `Admin manually set status to ${newStatus}`,
+        }).catch(() => {});
+      }
 
       toast.success(`${rec.staffName} marked as ${newStatus} for ${formatDateStr(rec.date)}`);
 
@@ -1166,6 +1186,21 @@ export default function AdminAttendance() {
             )}
           </div>
         </Modal>
+      )}
+
+      {activeOverrideConfirm && (
+        <ConfirmDialog
+          open={!!activeOverrideConfirm}
+          onClose={() => setActiveOverrideConfirm(null)}
+          onConfirm={async () => {
+            const { rec, newStatus } = activeOverrideConfirm;
+            await handleStatusChange(rec, newStatus, true);
+          }}
+          title="Staff Member Is Currently Checked In"
+          message={`This staff member is currently checked in (Check-in time: ${activeOverrideConfirm.rec.checkIn}). Marking this day Absent will override their daily attendance record without checking them out. They will still be able to check out normally. Continue?`}
+          confirmLabel="Mark Absent"
+          variant="warning"
+        />
       )}
     </div>
   );

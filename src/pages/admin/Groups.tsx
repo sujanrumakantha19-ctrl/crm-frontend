@@ -59,6 +59,11 @@ export default function AdminGroups() {
   const [deleteTargetGroup, setDeleteTargetGroup] = useState<Group | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Open Pool Staff Assignment Modal state
+  const [assignModalStaff, setAssignModalStaff] = useState<User | null>(null);
+  const [assignTargetGroupId, setAssignTargetGroupId] = useState<string>('');
+  const [isAssigning, setIsAssigning] = useState<boolean>(false);
+
   // Month & Year Filter state for group reports
   const [reportYear, setReportYear] = useState<string>('All');
   const [reportMonth, setReportMonth] = useState<string>('All');
@@ -252,8 +257,16 @@ export default function AdminGroups() {
     );
   }, [selectedGroupMembers, performanceData]);
 
+  const viewGroupPerformance = useMemo(() => {
+    if (!viewGroup) return null;
+    const targetId = String(viewGroup.id || (viewGroup as any)._id);
+    return (performanceData.performance || []).find(
+      (p: any) => String(p.group?.id || p.group?._id || p.groupId) === targetId
+    );
+  }, [viewGroup, performanceData]);
+
   const handleChangeGroup = async (staffId: string, targetGroupId: string) => {
-    const oldGroup = groupsList.find(g => (g.members || []).includes(staffId));
+    const oldGroup = groupsList.find(g => isMemberOfGroup(g.members, staffId));
     try {
       if (oldGroup) {
         await groupService.removeMember(oldGroup.id, staffId);
@@ -263,7 +276,10 @@ export default function AdminGroups() {
       }
 
       setGroupsList((prev: any[]) => prev.map((g: any) => {
-        let nextMembers = (g.members || []).filter((m: string) => m !== staffId);
+        let nextMembers = (g.members || []).filter((m: any) => {
+          const mId = typeof m === 'string' ? m : (m.id || m._id);
+          return String(mId) !== String(staffId);
+        });
         if (g.id === targetGroupId) {
           nextMembers = [...nextMembers, staffId];
         }
@@ -273,7 +289,13 @@ export default function AdminGroups() {
       setViewGroup((prev: any | null) => {
         if (!prev) return null;
         if (targetGroupId !== prev.id) {
-          return { ...prev, members: (prev.members || []).filter((m: string) => m !== staffId) };
+          return {
+            ...prev,
+            members: (prev.members || []).filter((m: any) => {
+              const mId = typeof m === 'string' ? m : (m.id || m._id);
+              return String(mId) !== String(staffId);
+            })
+          };
         }
         return prev;
       });
@@ -443,8 +465,8 @@ export default function AdminGroups() {
                   <Avatar initials={getInitials(staff.name)} size="sm" bg={getAvatarColor(staff.name)} />
                   <NameTag name={staff.name} displayId={staff.displayId} className="text-sm text-slate-700" />
                   <button
-                    onClick={() => handleChangeGroup(staff.id, groupsList[0]?.id || '')}
-                    className="text-xs bg-brand-green text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity ml-1"
+                    onClick={() => { setAssignModalStaff(staff); setAssignTargetGroupId(''); }}
+                    className="text-xs bg-brand-green text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity ml-1 font-medium cursor-pointer"
                   >
                     Assign
                   </button>
@@ -958,33 +980,13 @@ export default function AdminGroups() {
                     <p className="p-6 text-center text-xs text-slate-400 italic">No staff members match the search.</p>
                   ) : (
                     visibleStaff.map(staff => {
-                      const staffLeads = leads.filter(l =>
-                        l.assignedTo === staff.id &&
-                        matchMonthYear(l.createdAt || (l as any).updatedAt, reportYear, reportMonth)
+                      const mStats = (viewGroupPerformance?.memberStats || []).find(
+                        (m: any) => String(m.staffId || m._id) === String(staff.id)
                       );
-                      const totalLeads = staffLeads.length;
-
-                      const staffPlotBookings = plots.filter(p =>
-                        (p.status === 'Booked' || p.status === 'Registered') &&
-                        (
-                          String(p.assignedTo) === String(staff.id) ||
-                          String((p.bookedBy as any)?.staffId) === String(staff.id) ||
-                          staffLeads.some(l => String(l.id || (l as any)._id) === String((p.bookedBy as any)?.leadId))
-                        ) &&
-                        matchMonthYear(p.bookingDate || p.registrationDate || (p as any).createdAt, reportYear, reportMonth)
-                      ).length;
-
-                      const convertedCount = staffLeads.filter(l => l.status === 'Customer').length;
-                      const memberBookings = Math.max(staffPlotBookings, convertedCount);
-
-                      const totalFollowUps = staffLeads.reduce((acc, lead) => {
-                        const matching = (lead.followUps || []).filter(f =>
-                          matchMonthYear(f.date || (f as any).createdAt, reportYear, reportMonth)
-                        );
-                        return acc + (matching.length || (lead.followUps?.length && (reportYear === 'All' && reportMonth === 'All') ? lead.followUps.length : 0));
-                      }, 0);
-
-                      const staffQualified = staffLeads.filter(l => l.status === 'Qualified').length;
+                      const totalLeads = mStats?.leadsHandled || 0;
+                      const memberBookings = mStats?.bookingsClosed || 0;
+                      const totalFollowUps = mStats?.followUpsCount || 0;
+                      const staffQualified = mStats?.qualifiedLeads || 0;
 
                       return (
                         <div key={staff.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors">
@@ -1043,6 +1045,79 @@ export default function AdminGroups() {
           </Modal>
         );
       })()}
+
+      {/* Assign Open Pool Staff Modal */}
+      {assignModalStaff && (
+        <Modal
+          open={!!assignModalStaff}
+          onClose={() => { if (!isAssigning) setAssignModalStaff(null); }}
+          title="Assign Staff to Group"
+          size="sm"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setAssignModalStaff(null)}
+                disabled={isAssigning}
+                className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!assignTargetGroupId || isAssigning}
+                onClick={async () => {
+                  if (!assignTargetGroupId || !assignModalStaff) return;
+                  setIsAssigning(true);
+                  try {
+                    await handleChangeGroup(assignModalStaff.id, assignTargetGroupId);
+                    setAssignModalStaff(null);
+                  } finally {
+                    setIsAssigning(false);
+                  }
+                }}
+                className="px-4 py-2 bg-brand-green text-white rounded-lg text-sm font-medium hover:bg-brand-darkgreen transition-all disabled:opacity-50"
+              >
+                {isAssigning ? 'Assigning...' : 'Confirm Assignment'}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+              <Avatar initials={getInitials(assignModalStaff.name)} size="md" bg={getAvatarColor(assignModalStaff.name)} />
+              <div>
+                <p className="text-sm font-bold text-slate-900"><NameTag name={assignModalStaff.name} displayId={assignModalStaff.displayId} /></p>
+                <p className="text-xs text-slate-500">{assignModalStaff.designation || 'Staff Member'}</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase text-slate-500 mb-1.5">
+                Select Group <span className="text-red-500">*</span>
+              </label>
+              {groupsList.length === 0 ? (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                  No groups currently exist. Please create a group first.
+                </div>
+              ) : (
+                <select
+                  value={assignTargetGroupId}
+                  onChange={e => setAssignTargetGroupId(e.target.value)}
+                  className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm bg-white focus:border-brand-green outline-none transition-all cursor-pointer font-medium"
+                >
+                  <option value="">-- Choose a group --</option>
+                  {groupsList.map(g => (
+                    <option key={g.id || (g as any)._id} value={g.id || (g as any)._id}>
+                      {g.name} ({(g.members || []).length} members)
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

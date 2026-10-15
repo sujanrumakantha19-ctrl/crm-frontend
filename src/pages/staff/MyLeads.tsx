@@ -18,7 +18,6 @@ import { WhatsAppChatModal } from '@/components/modals/WhatsAppChatModal';
 import { useExportContext } from '@/context/ExportContext';
 import { getMaxDobStr, formatSource } from '@/lib/utils';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
-import { collapseCustomerLeads } from '@/pages/admin/Leads';
 
 const tabs: { key: string; label: string }[] = [
   { key: 'All', label: 'All Leads' },
@@ -153,6 +152,8 @@ export default function StaffMyLeads() {
       } else if (activeTab === 'Customer') {
         queryParams.status = 'Customer';
         queryParams.groupBy = 'customer';
+      } else if (activeTab === 'All') {
+        queryParams.groupBy = 'customer';
       }
 
       if (debouncedSearch.trim()) {
@@ -160,10 +161,7 @@ export default function StaffMyLeads() {
       }
 
       const lRes = await leadService.getAll(queryParams);
-      let filtered = lRes.data || [];
-      if (activeTab === 'Customer') {
-        filtered = collapseCustomerLeads(filtered);
-      }
+      const filtered = lRes.data || [];
       setLeadList(filtered);
       setTotalLeads(lRes.total ?? lRes.count ?? filtered.length);
     } catch { /* ignore */ }
@@ -740,7 +738,7 @@ export default function StaffMyLeads() {
             : `Are you sure you want to mark "${confirmAction?.lead?.customerName || 'this lead'}" as Unqualified?`
         }
         confirmLabel={confirmAction?.type === 'qualify' ? 'Yes, Mark Qualified' : 'Yes, Mark Unqualified'}
-        variant={confirmAction?.type === 'qualify' ? 'primary' : 'danger'}
+        variant={confirmAction?.type === 'qualify' ? 'warning' : 'danger'}
       />
 
       {/* Follow-up Modal */}
