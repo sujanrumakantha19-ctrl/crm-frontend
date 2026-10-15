@@ -291,6 +291,12 @@ export interface Task {
   project: string;
   comments: TaskComment[];
   createdAt: string;
+  reopenedBy?: string | { id?: string; name?: string };
+  reopenedAt?: string;
+  reopenReason?: string;
+  approvedBy?: string | { id?: string; name?: string };
+  approvedAt?: string;
+  version?: number;
 }
 
 export interface TaskComment {

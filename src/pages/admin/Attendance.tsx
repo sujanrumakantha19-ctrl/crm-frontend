@@ -458,7 +458,31 @@ export default function AdminAttendance() {
   const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{ rec: any; newStatus: string } | null>(null);
 
   const handleStatusChange = async (rec: any, newStatus: string, confirmed = false) => {
-    if (!newStatus || newStatus === rec.status) return;
+    if (!newStatus || (newStatus === rec.status && newStatus !== 'Reset')) return;
+
+    if (newStatus === 'Reset' || newStatus === 'Remove') {
+      setSavingStatusId(rec.id);
+      try {
+        await attendanceService.setOverride({
+          staffId: rec.staffId,
+          date: rec.date,
+          status: 'Reset',
+        });
+        toast.success(`Override removed for ${rec.staffName} on ${formatDateStr(rec.date)}`);
+        const res = await attendanceService.getByDate(rec.date);
+        if (res.data && Array.isArray(res.data)) {
+          setApiRecords(prev => {
+            const others = prev.filter(r => (r.date !== rec.date) || (r.staffId !== rec.staffId));
+            return [...others, ...res.data.filter((r: any) => String(r.staffId || r.userId || r.user?.id) === rec.staffId)];
+          });
+        }
+      } catch (err: any) {
+        toast.error(err.message || 'Failed to remove override');
+      } finally {
+        setSavingStatusId(null);
+      }
+      return;
+    }
 
     const isCheckedIn = (rec.checkIn && rec.checkIn !== '-') && (!rec.checkOut || rec.checkOut === '-');
     if (newStatus === 'Absent' && isCheckedIn && !confirmed) {
@@ -1136,6 +1160,7 @@ export default function AdminAttendance() {
                                 <option value="Present">Present</option>
                                 <option value="Half Day">Half Day</option>
                                 <option value="Absent">Absent</option>
+                                <option value="Reset">Reset Override</option>
                               </select>
                             </div>
                           </td>

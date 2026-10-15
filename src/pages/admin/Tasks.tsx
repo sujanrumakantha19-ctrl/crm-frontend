@@ -60,6 +60,17 @@ export default function AdminTasks() {
   const [taskModal, setTaskModal] = useState<Task | null>(null);
   const [comment, setComment] = useState('');
 
+  // Reopen task state
+  const [reopenModalOpen, setReopenModalOpen] = useState(false);
+  const [reopenReasonText, setReopenReasonText] = useState('');
+  const [reopeningTask, setReopeningTask] = useState(false);
+
+  // Edit task details state
+  const [isEditingTask, setIsEditingTask] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   // Fetch initial metadata (Projects, Leads & Staff)
   useEffect(() => {
     projectService.getAll({ limit: 100 })
@@ -313,6 +324,76 @@ export default function AdminTasks() {
       toast.success(`Status updated to "${newStatus}"`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update status');
+    }
+  };
+
+  const canEditTaskDetails = Boolean(taskModal && taskModal.status !== 'Done' && (
+    role === 'admin' ||
+    String(typeof taskModal.assignee === 'object' ? (taskModal.assignee?.id || (taskModal.assignee as any)?._id) : taskModal.assignee) === String(userId)
+  ));
+
+  const handleStartEdit = () => {
+    if (!taskModal) return;
+    setEditTitle(taskModal.title || '');
+    setEditDescription(taskModal.description || '');
+    setIsEditingTask(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!taskModal) return;
+    if (!editTitle.trim()) {
+      toast.error('Task title is required');
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const taskId = taskModal.id || (taskModal as any)._id;
+      const res = await taskService.update(taskId, {
+        title: editTitle.trim(),
+        description: editDescription.trim(),
+        version: taskModal.version,
+      } as any);
+      const updated = res.data as Task;
+      setTaskList(prev => prev.map(t => ((t.id || (t as any)._id) === taskId ? { ...t, ...updated, title: editTitle.trim(), description: editDescription.trim() } : t)));
+      setTaskModal(prev => prev ? { ...prev, ...updated, title: editTitle.trim(), description: editDescription.trim() } : null);
+      setIsEditingTask(false);
+      toast.success('Task details updated successfully');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update task details');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleOpenReopenModal = () => {
+    setReopenReasonText('');
+    setReopenModalOpen(true);
+  };
+
+  const handleConfirmReopen = async () => {
+    if (!reopenReasonText.trim()) {
+      toast.error('Please provide a reason for reopening this task.');
+      return;
+    }
+    if (!taskModal) return;
+    setReopeningTask(true);
+    try {
+      const taskId = taskModal.id || (taskModal as any)._id;
+      const res = await taskService.update(taskId, {
+        status: 'In Progress',
+        reopenReason: reopenReasonText.trim(),
+        version: taskModal.version,
+      } as any);
+      const updated = res.data as Task;
+      setTaskList(prev => prev.map(t => ((t.id || (t as any)._id) === taskId ? { ...t, ...updated, status: 'In Progress', reopenReason: reopenReasonText.trim() } : t)));
+      setTaskModal(prev => prev ? { ...prev, ...updated, status: 'In Progress', reopenReason: reopenReasonText.trim() } : null);
+      setReopenModalOpen(false);
+      setReopenReasonText('');
+      toast.success('Task reopened successfully!');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to reopen task');
+    } finally {
+      setReopeningTask(false);
     }
   };
 
@@ -573,11 +654,77 @@ export default function AdminTasks() {
 
       {/* Task Detail Modal */}
       {taskModal && (
-        <Modal open={!!taskModal} onClose={() => { setTaskModal(null); setComment(''); }} title={taskModal.title} size="lg">
+        <Modal
+          open={!!taskModal}
+          onClose={() => { setTaskModal(null); setComment(''); setIsEditingTask(false); }}
+          title={isEditingTask ? 'Edit Task Details' : taskModal.title}
+          size="lg"
+        >
           <div className="flex flex-col lg:flex-row gap-6">
             {/* Left - Description & Comments */}
             <div className="flex-[3]">
-              <p className="text-sm text-slate-600 mb-6">{taskModal.description}</p>
+              {isEditingTask ? (
+                <div className="space-y-3 mb-6 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Title</label>
+                    <input
+                      type="text"
+                      value={editTitle}
+                      onChange={e => setEditTitle(e.target.value)}
+                      className="w-full h-8 px-2.5 border border-slate-300 rounded text-xs focus:border-brand-green outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Description</label>
+                    <textarea
+                      value={editDescription}
+                      onChange={e => setEditDescription(e.target.value)}
+                      rows={3}
+                      className="w-full p-2 border border-slate-300 rounded text-xs focus:border-brand-green outline-none bg-white resize-none"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingTask(false)}
+                      className="px-3 py-1 border border-slate-200 rounded text-xs text-slate-600 hover:bg-slate-100"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveEdit}
+                      disabled={savingEdit}
+                      className="px-3 py-1 bg-brand-green text-white rounded text-xs font-medium hover:bg-brand-darkgreen disabled:opacity-50"
+                    >
+                      {savingEdit ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Description</span>
+                    {canEditTaskDetails && (
+                      <button
+                        type="button"
+                        onClick={handleStartEdit}
+                        className="text-xs text-brand-blue hover:underline font-medium"
+                      >
+                        Edit Details
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-sm text-slate-600 whitespace-pre-wrap">{taskModal.description || 'No description provided.'}</p>
+                </div>
+              )}
+
+              {taskModal.reopenReason && (
+                <div className="mb-4 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                  <span className="font-bold">Reopened:</span> {taskModal.reopenReason}
+                </div>
+              )}
+
               <div>
                 <h4 className="text-sm font-semibold text-slate-900 mb-3 flex items-center gap-2">
                   <MessageSquare size={16} /> Comments ({taskModal.comments.length})
@@ -629,7 +776,7 @@ export default function AdminTasks() {
                     {role === 'admin' ? (
                       <button
                         type="button"
-                        onClick={() => handleUpdateStatus(taskModal.id || (taskModal as any)._id, 'In Progress')}
+                        onClick={handleOpenReopenModal}
                         className="text-xs bg-brand-green text-white px-2.5 py-1 rounded hover:bg-brand-darkgreen transition-colors font-medium"
                       >
                         Reopen Task
@@ -797,6 +944,53 @@ export default function AdminTasks() {
                   className="w-full h-10 px-3 border border-slate-200 rounded-lg text-sm focus:border-brand-green outline-none transition-all"
                 />
               </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Reopen Task Modal */}
+      {reopenModalOpen && (
+        <Modal
+          open={reopenModalOpen}
+          onClose={() => setReopenModalOpen(false)}
+          title="Reopen Completed Task"
+          size="sm"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setReopenModalOpen(false)}
+                className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReopen}
+                disabled={reopeningTask}
+                className="px-4 py-2 bg-brand-green text-white rounded-lg text-sm font-medium hover:bg-brand-darkgreen active:scale-[0.98] transition-all disabled:opacity-50"
+              >
+                {reopeningTask ? 'Reopening...' : 'Confirm Reopen'}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            <p className="text-xs text-slate-600">
+              Please enter a reason for reopening this task. This reason will be logged for audit purposes.
+            </p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reopen Reason <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                value={reopenReasonText}
+                onChange={e => setReopenReasonText(e.target.value)}
+                placeholder="Why is this task being reopened? (e.g. Incomplete deliverables, client feedback)"
+                rows={3}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:border-brand-green outline-none transition-all resize-none"
+              />
             </div>
           </div>
         </Modal>

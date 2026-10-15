@@ -268,11 +268,14 @@ export default function AdminGroups() {
   const handleChangeGroup = async (staffId: string, targetGroupId: string) => {
     const oldGroup = groupsList.find(g => isMemberOfGroup(g.members, staffId));
     try {
-      if (oldGroup) {
-        await groupService.removeMember(oldGroup.id, staffId);
-      }
-      if (targetGroupId !== 'none') {
-        await groupService.addMember(targetGroupId, staffId);
+      if (targetGroupId === 'none') {
+        if (oldGroup) {
+          await groupService.removeMember(oldGroup.id, staffId);
+        }
+      } else {
+        await groupService.addMember(targetGroupId, staffId, {
+          expectedCurrentGroupId: oldGroup ? oldGroup.id : null,
+        });
       }
 
       setGroupsList((prev: any[]) => prev.map((g: any) => {
@@ -300,11 +303,17 @@ export default function AdminGroups() {
         return prev;
       });
 
+      // Refresh performance data in background
+      groupService.getPerformance({ year: reportYear, month: reportMonth })
+        .then(res => { if (res.data) setPerformanceData(res.data); })
+        .catch(() => {});
+
       const { toast } = await import('sonner');
       toast.success(targetGroupId === 'none' ? 'Member removed from group' : 'Member moved successfully');
     } catch (err: any) {
       const { toast } = await import('sonner');
       toast.error(err.message || 'Failed to update group membership');
+      throw err;
     }
   };
 
@@ -811,7 +820,7 @@ export default function AdminGroups() {
 
       {/* Team Members Contributions Modal */}
       {selectedGroupMembers && (() => {
-        const groupStaff = staffUsers.filter(s => (selectedGroupMembers.members || []).includes(s.id));
+        const groupStaff = staffUsers.filter(s => s && isMemberOfGroup(selectedGroupMembers.members, s.id || (s as any)._id));
         const filteredGroupStaff = groupStaff.filter(s => {
           if (!debouncedMemberSearch.trim()) return true;
           const q = debouncedMemberSearch.toLowerCase().trim();
@@ -919,8 +928,7 @@ export default function AdminGroups() {
 
       {/* View/Manage Group Members Modal */}
       {viewGroup && (() => {
-        const memberIds: string[] = viewGroup.members || [];
-        const groupStaff = staffUsers.filter(s => memberIds.includes(s.id));
+        const groupStaff = staffUsers.filter(s => s && isMemberOfGroup(viewGroup.members, s.id || (s as any)._id));
         const filteredGroupStaff = groupStaff.filter(s => {
           if (!debouncedMemberSearch.trim()) return true;
           const q = debouncedMemberSearch.toLowerCase().trim();
@@ -980,13 +988,14 @@ export default function AdminGroups() {
                     <p className="p-6 text-center text-xs text-slate-400 italic">No staff members match the search.</p>
                   ) : (
                     visibleStaff.map(staff => {
+                      const staffId = String(staff.id || (staff as any)._id);
                       const mStats = (viewGroupPerformance?.memberStats || []).find(
-                        (m: any) => String(m.staffId || m._id) === String(staff.id)
+                        (m: any) => String(m.id || m._id || m.staffId) === staffId
                       );
-                      const totalLeads = mStats?.leadsHandled || 0;
-                      const memberBookings = mStats?.bookingsClosed || 0;
-                      const totalFollowUps = mStats?.followUpsCount || 0;
-                      const staffQualified = mStats?.qualifiedLeads || 0;
+                      const totalLeads = mStats?.totalLeads ?? 0;
+                      const memberBookings = mStats?.memberBookings ?? 0;
+                      const totalFollowUps = mStats?.totalFollowUps ?? 0;
+                      const staffQualified = mStats?.staffQualified ?? 0;
 
                       return (
                         <div key={staff.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors">

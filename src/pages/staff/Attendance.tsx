@@ -6,6 +6,7 @@ import { attendanceService, projectService } from '@/services';
 import { Modal } from '@/components/shared/Modal';
 import { toast } from 'sonner';
 import { matchesStatusFilter } from '@/utils/attendanceFilters';
+import type { AttendanceStatus } from '@/types';
 
 const ACTIVITY_OPTIONS = ['On Duty', 'Projects', 'Bank', 'Outside Work', 'Office'];
 
@@ -15,7 +16,7 @@ interface DisplayRecord {
   checkIn: string;
   checkOut: string;
   duration: string;
-  status: 'Present' | 'Absent' | 'Half Day';
+  status: AttendanceStatus;
   activityType?: string;
   projectId?: string;
   projectName?: string;

@@ -79,7 +79,7 @@ export default function AdminDashboard() {
     lastRequestTimestampRef.current = reqTs;
     setPresenceError(null);
     try {
-      const r = await attendanceService.getTodayPresence();
+      const r = await attendanceService.getTodayPresence({ limit: 100 });
       if (reqTs < lastRequestTimestampRef.current) return;
       const payload = (r as any)?.data;
       if (Array.isArray(payload)) {

@@ -29,7 +29,7 @@ const tabs: { key: string; label: string }[] = [
 
 export default function StaffMyLeads() {
   const { userId, user } = useAuth();
-  const { triggerDownload } = useExportContext();
+  const { setExportInfo, triggerDownload } = useExportContext();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab');
@@ -164,9 +164,39 @@ export default function StaffMyLeads() {
       const filtered = lRes.data || [];
       setLeadList(filtered);
       setTotalLeads(lRes.total ?? lRes.count ?? filtered.length);
-    } catch { /* ignore */ }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to load leads');
+    }
     setLoading(false);
   }, [userId, activeTab, page, debouncedSearch]);
+
+  // Synchronize export info with current tab, filters, and search
+  useEffect(() => {
+    if (!userId) return;
+    const params: Record<string, string> = {
+      assignedTo: userId,
+    };
+    if (activeTab === 'Reserved') {
+      params.status = 'Open';
+    } else if (activeTab === 'Qualified') {
+      params.status = 'Qualified';
+    } else if (activeTab === 'Unqualified') {
+      params.status = 'Unqualified';
+    } else if (activeTab === 'Customer') {
+      params.status = 'Customer';
+      params.groupBy = 'customer';
+    } else if (activeTab === 'All') {
+      params.groupBy = 'customer';
+    }
+    if (debouncedSearch.trim()) {
+      params.search = debouncedSearch.trim();
+    }
+    setExportInfo({
+      endpoint: '/export/leads',
+      filename: `my-leads-${activeTab.toLowerCase()}-${new Date().toISOString().split('T')[0]}.csv`,
+      params,
+    });
+  }, [userId, activeTab, debouncedSearch, setExportInfo]);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
