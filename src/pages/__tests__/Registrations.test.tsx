@@ -45,7 +45,13 @@ vi.mock('@/components/shared/StatusBadge', () => ({
 }));
 
 vi.mock('@/components/shared/Modal', () => ({
-  Modal: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <div data-testid="modal">{children}</div> : null,
+  Modal: ({ open, children, title }: { open: boolean; children: React.ReactNode; title?: React.ReactNode }) =>
+    open ? (
+      <div data-testid="modal">
+        {title && <div>{title}</div>}
+        {children}
+      </div>
+    ) : null,
 }));
 
 vi.mock('react-router-dom', async () => {
@@ -481,6 +487,7 @@ describe('AdminRegistrations', () => {
       expect(toast.error).toHaveBeenCalledWith(
         expect.stringContaining('Start date (2026-05-10) cannot be after end date (2026-05-01)')
       );
+      expect(screen.getByText(/Invalid date range: Start date/i)).toBeInTheDocument();
     });
 
     // Backend query should not be called with this invalid range
@@ -490,5 +497,94 @@ describe('AdminRegistrations', () => {
         dateTo: '2026-05-01',
       })
     );
+  });
+
+  it('displays retained results note when a subsequent fetch fails', async () => {
+    mockPlotService.getAll.mockImplementation(async (params?: any) => {
+      if (params?.search === 'Something New') {
+        throw new Error('Network disconnected');
+      }
+      return {
+        data: [
+          {
+            id: 'plot-10',
+            plotNumber: 'P-10',
+            projectId: { name: 'Lotus Park' },
+            status: 'Registered',
+            registrationDate: '2026-01-01',
+            bookedBy: { name: 'Initial Customer', phone: '9999988888', paymentStatus: 'Fully Paid' },
+            effectivePaymentStatus: 'Fully Paid',
+          },
+        ],
+        total: 1,
+      };
+    });
+
+    render(
+      <MemoryRouter>
+        <AdminRegistrations />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Initial Customer').length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5000 });
+
+    const searchInput = screen.getByPlaceholderText(/Search by customer name/i);
+    fireEvent.change(searchInput, { target: { value: 'Something New' } });
+
+    // Fast-forward debounce
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 650));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Showing retained results from the previous successful search/i)).toBeInTheDocument();
+      // Retained row is still visible
+      expect(screen.getAllByText('Initial Customer').length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5000 });
+  });
+
+  it('checks effectivePaymentStatus in the Confirm Register modal warning', async () => {
+    mockPlotService.getAll.mockResolvedValue({
+      data: [
+        {
+          id: 'plot-warn-1',
+          plotNumber: 'P-WARN-1',
+          projectId: { name: 'Lotus Park' },
+          status: 'Booked',
+          expectedRegistrationDate: '2026-10-20',
+          bookedBy: {
+            name: 'Unpaid Buyer',
+            phone: '9876543210',
+            paymentStatus: '', // raw is empty
+          },
+          effectivePaymentStatus: 'Not Paid', // effective is Not Paid
+        },
+      ],
+      total: 1,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/admin/registrations?tab=upcoming']}>
+        <AdminRegistrations />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Unpaid Buyer').length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5000 });
+
+    // Find and click the Confirm Register button (desktop or mobile)
+    const confirmButtons = screen.getAllByRole('button', { name: /Confirm Register/i });
+    fireEvent.click(confirmButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Confirm Registration — Plot #P-WARN-1/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Payment status for this plot is currently/i)
+      ).toBeInTheDocument();
+      expect(screen.getAllByText('Not Paid').length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5000 });
   });
 });

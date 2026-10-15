@@ -364,6 +364,7 @@ export default function AdminRegistrations() {
   const [refreshing, setRefreshing] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [dateRangeError, setDateRangeError] = useState<string | null>(null);
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [allLeads, setAllLeads] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<{ id: string; name: string; displayId?: string; role: string }[]>([]);
@@ -489,11 +490,17 @@ export default function AdminRegistrations() {
   const fetchPlots = useCallback(async (p = 1, { replace = true, showRefreshing = false } = {}) => {
     const f = filtersRef.current;
     if (f.dateFrom && f.dateTo && f.dateFrom > f.dateTo) {
-      toast.error(`Invalid date range: Start date (${f.dateFrom}) cannot be after end date (${f.dateTo})`);
+      const msg = `Invalid date range: Start date (${f.dateFrom}) cannot be after end date (${f.dateTo})`;
+      setDateRangeError(msg);
+      toast.error(msg);
+      setPlots([]);
+      setTotal(0);
+      setTotalPlots(0);
       setLoading(false);
       setRefreshing(false);
       return;
     }
+    setDateRangeError(null);
 
     setFetchError(null);
     const reqId = ++fetchRequestIdRef.current;
@@ -1133,6 +1140,25 @@ export default function AdminRegistrations() {
         </p>
       )}
 
+      {dateRangeError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+            <span>{dateRangeError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setFilters(prev => ({ ...prev, dateFrom: '', dateTo: '' }));
+              setDateRangeError(null);
+            }}
+            className="px-3 py-1 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-md font-bold transition-all cursor-pointer shadow-xs"
+          >
+            Clear Dates
+          </button>
+        </div>
+      )}
+
       {optionsError && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold shadow-xs">
           <div className="flex items-center gap-2">
@@ -1153,7 +1179,14 @@ export default function AdminRegistrations() {
         <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle size={15} className="text-rose-600 shrink-0" />
-            <span>{fetchError}</span>
+            <div>
+              <span>{fetchError}</span>
+              {plots.length > 0 && (
+                <span className="block text-[11px] text-rose-600 font-normal mt-0.5">
+                  Showing retained results from the previous successful search.
+                </span>
+              )}
+            </div>
           </div>
           <button
             type="button"
@@ -1976,11 +2009,11 @@ export default function AdminRegistrations() {
               Customer: <strong className="text-slate-900 font-bold">{confirmingRegPlot.bookedBy?.name || 'Customer'}</strong>
             </p>
 
-            {confirmingRegPlot.bookedBy?.paymentStatus !== 'Fully Paid' && (
+            {((confirmingRegPlot.effectivePaymentStatus || confirmingRegPlot.bookedBy?.paymentStatus || 'Not Paid') !== 'Fully Paid') && (
               <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-2">
                 <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
                 <span>
-                  <strong>Warning:</strong> Payment status for this plot is currently <strong>{confirmingRegPlot.bookedBy?.paymentStatus || 'Not Paid'}</strong>. You can select a registration date and proceed to confirm registration.
+                  <strong>Warning:</strong> Payment status for this plot is currently <strong>{confirmingRegPlot.effectivePaymentStatus || confirmingRegPlot.bookedBy?.paymentStatus || 'Not Paid'}</strong>. You can select a registration date and proceed to confirm registration.
                 </span>
               </div>
             )}
