@@ -11,7 +11,7 @@ import { useExportContext } from '@/context/ExportContext';
 import { useAuth } from '@/context/AuthContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import { isTaskAssignedTo } from '@/lib/taskAssignee';
-import type { Lead, Task, AttendanceRecord } from '@/types';
+import type { Lead, Task, AttendanceRecord, DailyAttendanceRecord } from '@/types';
 import { toast } from 'sonner';
 import {
   ResponsiveContainer,
@@ -78,7 +78,7 @@ export default function StaffReports() {
   const [summaryLeads, setSummaryLeads] = useState<Lead[]>([]);
   const [summaryCreatedLeads, setSummaryCreatedLeads] = useState<Lead[]>([]);
   const [summaryTasks, setSummaryTasks] = useState<Task[]>([]);
-  const [summaryAttendance, setSummaryAttendance] = useState<AttendanceRecord[]>([]);
+  const [summaryAttendance, setSummaryAttendance] = useState<DailyAttendanceRecord[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
 
   /* ── Projects list for filter ── */
@@ -143,8 +143,8 @@ export default function StaffReports() {
   const fetchSummaryStats = useCallback(async () => {
     if (!userId) { setSummaryLoading(false); return; }
     setSummaryLoading(true);
-
-    const leadParams: Record<string, any> = { assignedTo: userId, limit: 500 };
+    try {
+      const leadParams: Record<string, any> = { assignedTo: userId, limit: 500 };
     const createdParams: Record<string, any> = { sourceType: 'Staff', limit: 500 };
     const taskParams: Record<string, any> = { limit: 500 };
     const attParams: Record<string, any> = { staffId: userId, limit: 500 };
@@ -160,12 +160,15 @@ export default function StaffReports() {
       attParams['date[lte]'] = dateRange.to;
     }
 
-    try {
+      const attDailyParams: Record<string, any> = { staffId: userId, limit: 100 };
+      if (dateRange.from) attDailyParams.dateFrom = dateRange.from;
+      if (dateRange.to) attDailyParams.dateTo = dateRange.to;
+
       const [lRes, cRes, tRes, aRes, pRes] = await Promise.allSettled([
         leadService.getAll(leadParams),
         leadService.getAll(createdParams),
         taskService.getAll(taskParams),
-        attendanceService.getAll(attParams),
+        attendanceService.getDaily(attDailyParams),
         projectService.getAll({ limit: 100 }),
       ]);
 
@@ -292,22 +295,28 @@ export default function StaffReports() {
           limit,
         };
         if (attStatus !== 'All') params.status = attStatus;
-        if (attActivity !== 'All') params.activityType = attActivity;
-        if (attDateFrom) params['date[gte]'] = attDateFrom;
-        if (attDateTo) params['date[lte]'] = attDateTo;
+        if (attDateFrom) params.dateFrom = attDateFrom;
+        if (attDateTo) params.dateTo = attDateTo;
 
-        const res = await attendanceService.getAll(params);
-        let list: AttendanceRecord[] = res.data || [];
+        const res = await attendanceService.getDaily(params);
+        const rawList = (res as any)?.data || [];
+        const mappedList: AttendanceRecord[] = rawList.map((d: any) => ({
+          id: d._id || d.id || `${d.staffId}_${d.date}`,
+          staffId: d.staffId,
+          staffName: d.staffName,
+          date: d.date,
+          status: d.status,
+          role: d.role,
+          activityType: d.currentActivity || 'Office',
+          projectName: d.currentLocation || '—',
+          location: d.currentLocation || '—',
+          checkIn: d.firstCheckIn || '—',
+          checkOut: d.lastCheckOut || '—',
+          duration: d.formattedDuration || '—',
+        }));
 
-        if (attDateFrom) {
-          list = list.filter(a => a.date >= attDateFrom);
-        }
-        if (attDateTo) {
-          list = list.filter(a => a.date <= attDateTo);
-        }
-
-        setAttendanceData(list);
-        setTotalCount(res.total ?? list.length);
+        setAttendanceData(mappedList);
+        setTotalCount((res as any)?.total ?? (res as any)?.pagination?.total ?? mappedList.length);
       }
     } catch (err: any) {
       toast.error(err.message || 'Failed to load report data');

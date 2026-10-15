@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-empty */
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Search, Pencil, MapPin, LayoutGrid, CheckCircle, Circle, XCircle, ChevronLeft, ChevronRight, X, Map as MapIcon, Clock3, Upload, FileText, Send, MessageSquare, Ban, Download, Plus, Building2, ImageOff, ExternalLink, Trash2, FolderPlus, AlertTriangle, AlertCircle, Share2 } from 'lucide-react';
 import { StatusBadge } from '@/components/shared/StatusBadge';
@@ -676,8 +677,9 @@ export default function AdminProjectDetail() {
       const { uploadService } = await import('@/services/uploads');
       const res = await uploadService.upload('projects', Array.from(files));
       if (res.success && res.data && res.data.length > 0) {
-        const filename = res.data[0];
-        setBroadcastAttachment(filename);
+        const fileObj = res.data[0];
+        const filename = typeof fileObj === 'string' ? fileObj : fileObj?.filename;
+        if (filename) setBroadcastAttachment(filename);
         setShowAttachmentPicker(false);
         const { toast } = await import('sonner');
         toast.success('Custom image uploaded successfully!');
@@ -948,8 +950,7 @@ export default function AdminProjectDetail() {
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
     const pStatus: 'Not Paid' | 'Partially Paid' | 'Fully Paid' =
-      advancePaymentStatus === 'Paid' ? 'Fully Paid' :
-        advancePaymentStatus === 'Partial' ? 'Partially Paid' : 'Not Paid';
+      advancePaymentStatus === 'Paid' ? 'Fully Paid' : 'Not Paid';
 
     const customerId = (selectedCustomer as any)._id || selectedCustomer.id;
 
@@ -1037,7 +1038,7 @@ export default function AdminProjectDetail() {
   };
 
   const handleRegisterPlot = async () => {
-    if (!selectedPlot || !registrationDate) return;
+    if (!selectedPlot || !registrationDate || !project) return;
     if (saving) return;
     setSaving(true);
     try {
@@ -1110,7 +1111,7 @@ export default function AdminProjectDetail() {
       }
 
       if (resolvedLead && resolvedLead.assignedTo) {
-        const rawAssignedTo = resolvedLead.assignedTo;
+        const rawAssignedTo: any = resolvedLead.assignedTo;
         const aId = typeof rawAssignedTo === 'object' && rawAssignedTo !== null
           ? (rawAssignedTo._id || rawAssignedTo.id)
           : rawAssignedTo;
@@ -1202,7 +1203,7 @@ export default function AdminProjectDetail() {
         }
       ];
 
-      const results = await Promise.allSettled(tasksToCreate.map(t => taskService.create(t)));
+      const results = await Promise.allSettled(tasksToCreate.map(t => taskService.create(t as any)));
       const failures = results.filter(r => r.status === 'rejected');
 
       logActivity({ id: authUser?.id || '', name: authUser?.name || 'Admin', role: role || 'admin', initials: authUser?.initials }, `Registered plot #${selectedPlot.plotNumber}`, 'Status Change', 'Plot', plotId, `Plot #${selectedPlot.plotNumber}`);
@@ -1264,7 +1265,7 @@ export default function AdminProjectDetail() {
   const registered = projectPlotStats.Registered || 0;
   const booked = projectPlotStats.Booked || 0;
   const rawAvailable = projectPlotStats.Available || 0;
-  const rawCanceled = (projectPlotStats.Cancelled || 0) + (projectPlotStats.Canceled || 0);
+  const rawCanceled = projectPlotStats.Cancelled || 0;
   const available = isPartner ? (rawAvailable + rawCanceled) : rawAvailable;
   const canceled = isPartner ? 0 : rawCanceled;
   const pending = projectPlotStats.Pending || 0;
@@ -1324,8 +1325,10 @@ export default function AdminProjectDetail() {
             <button
               type="button"
               onClick={() => {
-                setExportInfo({ endpoint: '/export/project-detail', filename: 'project-detail', params: { id } });
-                setTimeout(() => triggerDownload(), 50);
+                if (id) {
+                  setExportInfo({ endpoint: '/export/project-detail', filename: 'project-detail', params: { id } });
+                  setTimeout(() => triggerDownload(), 50);
+                }
               }}
               className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
               title="Export all project, plot, booking, customer and staff details"
@@ -1478,7 +1481,7 @@ export default function AdminProjectDetail() {
                 ['Land Type', project.landType],
                 ['Total Plots', String(displayTotalPlots)],
               ].map(([label, value], i) => (
-                <div key={label} className={`flex justify-between py-3 px-2 ${i % 2 === 0 ? 'bg-slate-50/50' : ''}`}>
+                <div key={`pd-row-${i}`} className={`flex justify-between py-3 px-2 ${i % 2 === 0 ? 'bg-slate-50/50' : ''}`}>
                   <span className="text-xs text-slate-400 uppercase tracking-wide">{label}</span>
                   <span className="text-sm text-slate-800 text-right max-w-[60%] font-medium">
                     {label === 'Status' ? <StatusBadge status={project.status} /> : value}

@@ -20,7 +20,7 @@ export default function AdminLeadDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { role } = useAuth();
+  const { role, user } = useAuth();
   const backPath = `/${role}/leads`;
 
   const [leadState, setLeadState] = useState<Lead | null>(null);
@@ -127,7 +127,7 @@ export default function AdminLeadDetail() {
   const [budget, setBudget] = useState('');
   const [category, setCategory] = useState('');
   const [status, setStatus] = useState<LeadStatus>('Open');
-  const [paymentStatus, setPaymentStatus] = useState<'Not Paid' | 'Partially Paid' | 'Fully Paid'>('Not Paid');
+  const [paymentStatus, setPaymentStatus] = useState<'Advance Paid' | 'Advance Not Paid' | 'Fully Paid' | 'Partially Paid' | 'Not Paid'>('Not Paid');
   const [gender, setGender] = useState<'Male' | 'Female' | 'Other'>('Male');
 
   // Duplicate phone state
@@ -311,7 +311,7 @@ export default function AdminLeadDetail() {
 
     try {
       await leadService.update(leadIdStr, updated as any);
-      setLeadState(updated);
+      setLeadState(updated as any);
       const { toast } = await import('sonner');
       toast.success('Lead updated successfully!');
     } catch (err: any) {
@@ -505,7 +505,7 @@ export default function AdminLeadDetail() {
               // Pre-populate fields
               setName(leadState.customerName);
               setPhone(leadState.phone);
-              setEmail(leadState.email);
+              setEmail(leadState.email || '');
               setCity(leadState.city);
               setDob(leadState.dob || '');
               setNotes(leadState.notes || '');

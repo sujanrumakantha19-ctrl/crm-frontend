@@ -22,25 +22,27 @@ export interface FollowUpQuery {
   outcome?: string;
 }
 
+export interface FollowUpItem {
+  id: string;
+  followUpId: string;
+  leadId: string;
+  leadName: string;
+  phone: string;
+  city?: string;
+  status: string;
+  staffId?: string;
+  staffName?: string;
+  projectId?: string;
+  date: string;
+  nextFollowUpDate?: string;
+  outcome: string;
+  notes?: string;
+  nextAction?: string;
+}
+
 export interface FollowUpResponse {
   success: boolean;
-  data: Array<{
-    id: string;
-    followUpId: string;
-    leadId: string;
-    leadName: string;
-    phone: string;
-    city?: string;
-    status: string;
-    staffId?: string;
-    staffName?: string;
-    projectId?: string;
-    date: string;
-    nextFollowUpDate?: string;
-    outcome: string;
-    notes?: string;
-    nextAction?: string;
-  }>;
+  data: FollowUpItem[];
   total: number;
   page: number;
   pages: number;
@@ -86,7 +88,7 @@ export const leadService = {
     return api.get<Lead>(`/leads/${id}`);
   },
   getFollowUps(params?: FollowUpQuery) {
-    return api.get<FollowUpResponse>('/leads/follow-ups', params as Record<string, string | number | undefined>);
+    return api.get<FollowUpItem[]>('/leads/follow-ups', params as Record<string, string | number | undefined>);
   },
   getByStatus(status: string) {
     return api.get<Lead[]>(`/leads/status/${status}`);

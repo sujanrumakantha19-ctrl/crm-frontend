@@ -223,7 +223,7 @@ export default function AdminLeads() {
 
   // Filtered leads calculation
   const filtered = useMemo(() => {
-    return leadList.filter(l => {
+    const matched = leadList.filter((l: Lead) => {
       const hasAssignee = !!(l.assignedTo && l.assignedTo !== undefined && l.assignedTo !== null);
       let matchesTab = false;
       if (activeTab === 'All') {
@@ -280,8 +280,8 @@ export default function AdminLeads() {
       return collapseCustomerLeads(matched);
     }
     if (activeTab === 'All' && debouncedSearch.trim()) {
-      const custs = matched.filter(l => l.status === 'Customer');
-      const nonCusts = matched.filter(l => l.status !== 'Customer');
+      const custs = matched.filter((l: Lead) => l.status === 'Customer');
+      const nonCusts = matched.filter((l: Lead) => l.status !== 'Customer');
       return [...collapseCustomerLeads(custs), ...nonCusts];
     }
     return matched;
@@ -794,7 +794,7 @@ export default function AdminLeads() {
         </Empty>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(lead => (
+          {filtered.map((lead: Lead) => (
             <div key={lead.id} className="bg-white rounded-lg border border-slate-200 shadow-sm p-5 hover:shadow-md transition-shadow flex flex-col justify-between">
               <div>
                 <div className="flex items-start justify-between mb-3">
@@ -811,7 +811,11 @@ export default function AdminLeads() {
                             setWhatsAppLead({
                               phone: lead.phone,
                               name: lead.customerName,
-                              projectName: (() => { const p = projects.find(pj => pj.id === lead.projectId); return p ? `${p.name} [${p.displayId}]` : '' })()
+                              projectName: (() => {
+                                const pId = typeof lead.projectId === 'object' && lead.projectId !== null ? (lead.projectId as any)._id || (lead.projectId as any).id : lead.projectId;
+                                const p = projects.find(pj => (pj.id || (pj as any)._id) === pId) || (typeof lead.projectId === 'object' && lead.projectId !== null ? lead.projectId as any : undefined);
+                                return p ? `${p.name} [${p.displayId}]` : '';
+                              })()
                             });
                           }}
                           className="p-1 hover:bg-emerald-50 rounded text-emerald-600 transition-colors flex items-center justify-center shrink-0"

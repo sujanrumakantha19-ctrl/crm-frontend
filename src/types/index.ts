@@ -17,6 +17,7 @@ export interface User {
   gender?: 'Male' | 'Female' | 'Other';
   companyName?: string;
   reraId?: string;
+  city?: string;
   isActive: boolean;
   createdAt?: string;
 }
@@ -60,7 +61,7 @@ export interface Project {
   inventoryPlotCount?: number;
 }
 
-export type PlotStatus = 'Available' | 'Booked' | 'Registered' | 'Canceled' | 'Pending';
+export type PlotStatus = 'Available' | 'Booked' | 'Registered' | 'Canceled' | 'Cancelled' | 'Pending';
 
 export interface SellerInfo {
   name: string;
@@ -104,6 +105,9 @@ export interface Plot {
     displayId?: string;
     email?: string;
     assignedTo?: string;
+    staffId?: string;
+    staffName?: string;
+    staffDisplayId?: string;
     bookingDate?: string;
     bookedAt?: string;
     date?: string;
@@ -151,7 +155,7 @@ export interface Lead {
   customerName: string;
   displayId?: string;
   phone: string;
-  email: string;
+  email?: string;
   city: string;
   budgetMin?: number;
   budgetMax?: number;
@@ -167,8 +171,8 @@ export interface Lead {
   status: LeadStatus;
   dateAdded: string;
   followUps?: FollowUp[];
-  projectId?: string;
-  plotId?: string;
+  projectId?: string | Project | any;
+  plotId?: string | Plot | any;
   plotIds?: string[];
   paymentStatus?: 'Advance Paid' | 'Advance Not Paid' | 'Fully Paid' | 'Partially Paid' | 'Not Paid';
   paymentMethod?: 'CASH' | 'LOAN';
@@ -180,17 +184,20 @@ export interface Lead {
   loanStage?: string;
   dob?: string;
   gender?: 'Male' | 'Female' | 'Other';
+  nextFollowUpDate?: string | null;
+  expectedRegistrationDate?: string;
   createdAt?: string;
   assignedAt?: string;
   updatedAt?: string;
 }
 
 export interface FollowUp {
-  id: string;
+  id?: string;
   date: string;
   notes: string;
   outcome: string;
-  nextAction: string;
+  nextAction?: string;
+  nextFollowUpDate?: string;
 }
 
 export type AttendanceStatus =
@@ -341,6 +348,7 @@ export interface ChannelPartner {
   email: string;
   city: string;
   reraId?: string;
+  role?: string;
   totalLeads: number;
   isActive: boolean;
   initials: string;

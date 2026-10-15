@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
+import { useExportContext } from '@/context/ExportContext';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { ChevronRight, ChevronLeft, Search, X, Power, Check, Info, Clock, CheckCircle2, RefreshCw } from 'lucide-react';
 import { attendanceService, projectService } from '@/services';
 import { Modal } from '@/components/shared/Modal';
 import { toast } from 'sonner';
-import { matchesStatusFilter } from '@/utils/attendanceFilters';
 import type { AttendanceStatus } from '@/types';
 
 const ACTIVITY_OPTIONS = ['On Duty', 'Projects', 'Bank', 'Outside Work', 'Office'];
@@ -68,11 +68,25 @@ export default function StaffAttendance() {
 
   // --- Info Modal state ---
   const [showInfoModal, setShowInfoModal] = useState(false);
+  const { setExportInfo } = useExportContext();
 
   // --- Backend & Frontend Filters ---
   const [monthFilter, setMonthFilter] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+
+  // Synchronize topbar export configuration with current filters
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (monthFilter) params.month = monthFilter;
+    if (dateFilter) params.date = dateFilter;
+    if (statusFilter && statusFilter !== 'All') params.status = statusFilter;
+    setExportInfo({
+      endpoint: '/export/attendance',
+      filename: `attendance${monthFilter ? `-${monthFilter}` : dateFilter ? `-${dateFilter}` : ''}`,
+      params,
+    });
+  }, [monthFilter, dateFilter, statusFilter, setExportInfo]);
 
   const today = new Date();
   const dateStr = today.toLocaleDateString('en-US', {
@@ -111,6 +125,7 @@ export default function StaffAttendance() {
       };
       if (monthFilter) params.month = monthFilter;
       if (dateFilter) params.date = dateFilter;
+      if (statusFilter && statusFilter !== 'All') params.status = statusFilter;
 
       const res = await attendanceService.getDaily(params);
       const records: DisplayRecord[] = (res.data || []).map((r: any) => ({
@@ -134,91 +149,44 @@ export default function StaffAttendance() {
       setTotalCount(total);
       setTotalPages(Math.max(1, Math.ceil(total / itemsPerPage)));
 
-      // Detect active check-in session for today — fetch today's record directly
-      // so the active session is detected even if it's not on the current page
+      // Detect genuine active check-in session from dedicated backend endpoint
       try {
-        const todayRes = await attendanceService.getToday();
-        const rawList = Array.isArray((todayRes as any)?.data)
-          ? (todayRes as any).data
-          : (todayRes as any)?.data
-            ? [(todayRes as any).data]
-            : Array.isArray(todayRes)
-              ? todayRes
-              : [];
-        const todayRecord = rawList.find(
-          (r: any) => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
-        ) || (rawList.length > 0 && (!rawList[0].checkOut || rawList[0].checkOut === '—' || rawList[0].checkOut === '-') ? rawList[0] : null);
+        const activeRes = await attendanceService.getActive();
+        const activeRecord = (activeRes as any)?.data !== undefined ? (activeRes as any).data : activeRes;
 
-        if (todayRecord) {
+        if (activeRecord && (activeRecord.id || activeRecord._id) && activeRecord.isActive && activeRecord.checkIn && activeRecord.checkIn !== '—' && activeRecord.checkIn !== '-') {
+          const recId = activeRecord.id || activeRecord._id;
           setCheckedIn(true);
-          setActiveRecordId(todayRecord.id || todayRecord._id);
-          const cInTime = (todayRecord.checkIn === '—' || todayRecord.checkIn === '-') ? null : todayRecord.checkIn;
-          const ts = todayRecord.createdAt ? new Date(todayRecord.createdAt).getTime() : Date.now();
+          setActiveRecordId(recId);
+          const cInTime = activeRecord.checkIn;
+          const ts = activeRecord.createdAt ? new Date(activeRecord.createdAt).getTime() : Date.now();
           setActiveCheckInTime(cInTime);
           setActiveCheckInTs(ts);
-          setActiveActivityType(todayRecord.activityType || 'On Duty');
-          setActiveProjectId(todayRecord.projectId || '');
-          setActiveProjectName(todayRecord.projectName || '');
-          setActivityType(todayRecord.activityType || 'On Duty');
-          setSelectedProjectId(todayRecord.projectId || '');
-          setSelectedProjectName(todayRecord.projectName || '');
-          authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
-        } else {
-          // If no active session found on today endpoint, check within monthly records
-          const active = records.find(
-            r => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
-          );
-          if (active) {
-            setCheckedIn(true);
-            setActiveRecordId(active.id);
-            const cInTime = (active.checkIn === '—' || active.checkIn === '-') ? null : active.checkIn;
-            const ts = active.createdAt ? new Date(active.createdAt).getTime() : Date.now();
-            setActiveCheckInTime(cInTime);
-            setActiveCheckInTs(ts);
-            setActiveActivityType(active.activityType || 'On Duty');
-            setActiveProjectId(active.projectId || '');
-            setActiveProjectName(active.projectName || '');
-            setActivityType(active.activityType || 'On Duty');
-            setSelectedProjectId(active.projectId || '');
-            setSelectedProjectName(active.projectName || '');
-            authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
-          } else {
-            setCheckedIn(false);
-            setActiveRecordId(null);
-            authCheckOut();
-          }
-        }
-      } catch {
-        // Fallback: check within current page records if /today endpoint fails
-        const active = records.find(
-          r => r.date === todayDateStr && (!r.checkOut || r.checkOut === '—' || r.checkOut === '-')
-        );
-        if (active) {
-          setCheckedIn(true);
-          setActiveRecordId(active.id);
-          const cInTime = (active.checkIn === '—' || active.checkIn === '-') ? null : active.checkIn;
-          const ts = active.createdAt ? new Date(active.createdAt).getTime() : Date.now();
-          setActiveCheckInTime(cInTime);
-          setActiveCheckInTs(ts);
-          setActiveActivityType(active.activityType || 'On Duty');
-          setActiveProjectId(active.projectId || '');
-          setActiveProjectName(active.projectName || '');
-          setActivityType(active.activityType || 'On Duty');
-          setSelectedProjectId(active.projectId || '');
-          setSelectedProjectName(active.projectName || '');
+          setActiveActivityType(activeRecord.activityType || 'On Duty');
+          const pId = typeof activeRecord.projectId === 'object' && activeRecord.projectId !== null ? (activeRecord.projectId as any)._id || (activeRecord.projectId as any).id : activeRecord.projectId || '';
+          const pName = typeof activeRecord.projectId === 'object' && activeRecord.projectId !== null ? (activeRecord.projectId as any).name : activeRecord.projectName || '';
+          setActiveProjectId(pId);
+          setActiveProjectName(pName);
+          setActivityType(activeRecord.activityType || 'On Duty');
+          setSelectedProjectId(pId);
+          setSelectedProjectName(pName);
           authCheckIn(cInTime || new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), ts);
         } else {
           setCheckedIn(false);
           setActiveRecordId(null);
           authCheckOut();
         }
+      } catch {
+        setCheckedIn(false);
+        setActiveRecordId(null);
+        authCheckOut();
       }
     } catch {
       // silent catch
     } finally {
       setLoading(false);
     }
-  }, [userId, todayDateStr, currentPage, itemsPerPage, monthFilter, dateFilter, authCheckIn, authCheckOut]);
+  }, [userId, todayDateStr, currentPage, itemsPerPage, monthFilter, dateFilter, statusFilter, authCheckIn, authCheckOut]);
 
   useEffect(() => {
     fetchAttendance();
@@ -577,7 +545,10 @@ export default function StaffAttendance() {
               <span className="text-xs text-slate-400 font-medium">Status:</span>
               <select
                 value={statusFilter}
-                onChange={e => setStatusFilter(e.target.value)}
+                onChange={e => {
+                  setStatusFilter(e.target.value);
+                  setCurrentPage(1);
+                }}
                 className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 focus:border-brand-green outline-none cursor-pointer font-medium"
               >
                 <option value="All">All Statuses</option>
@@ -638,7 +609,7 @@ export default function StaffAttendance() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {monthlyRecords.filter(r => matchesStatusFilter(r.status, r.duration, statusFilter)).map((row, i) => (
+                  {monthlyRecords.map((row, i) => (
                     <tr key={row.id || i} className="hover:bg-slate-50 transition-colors">
                       <td className="px-4 py-3 text-slate-900 font-semibold whitespace-nowrap">{row.date}</td>
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{row.checkIn}</td>

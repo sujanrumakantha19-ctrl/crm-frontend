@@ -44,7 +44,8 @@ describe('ShareLocationModal', () => {
     });
   });
 
-  it('allows selecting leads and sending WhatsApp message', async () => {
+  it('immediately triggers direct wa.me window.open for single recipient without calling whatsappService.send', async () => {
+    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
     const mockProject = {
       id: 'proj-1',
       name: 'Green Valley Enclave',
@@ -57,7 +58,7 @@ describe('ShareLocationModal', () => {
       expect(screen.getByText('Ramesh Patel')).toBeInTheDocument();
     });
 
-    // Select Ramesh Patel
+    // Select single lead Ramesh Patel
     fireEvent.click(screen.getByText('Ramesh Patel'));
 
     const sendBtn = screen.getByText(/Send WhatsApp/);
@@ -66,9 +67,50 @@ describe('ShareLocationModal', () => {
     fireEvent.click(sendBtn);
 
     await waitFor(() => {
+      expect(windowOpenSpy).toHaveBeenCalledWith(
+        expect.stringContaining('https://wa.me/919876512345?text='),
+        '_blank'
+      );
+      expect(whatsappService.send).not.toHaveBeenCalled();
+    });
+
+    windowOpenSpy.mockRestore();
+  });
+
+  it('calls whatsappService.send for multiple selected recipients', async () => {
+    const mockProject = {
+      id: 'proj-1',
+      name: 'Green Valley Enclave',
+      location: 'Hyderabad',
+    };
+
+    render(<ShareLocationModal open={true} onClose={vi.fn()} project={mockProject} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Ramesh Patel')).toBeInTheDocument();
+      expect(screen.getByText('Sita Devi')).toBeInTheDocument();
+    });
+
+    // Select both leads
+    fireEvent.click(screen.getByText('Ramesh Patel'));
+    fireEvent.click(screen.getByText('Sita Devi'));
+
+    const sendBtn = screen.getByText(/Send WhatsApp/);
+    expect(sendBtn).not.toBeDisabled();
+
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => {
+      expect(whatsappService.send).toHaveBeenCalledTimes(2);
       expect(whatsappService.send).toHaveBeenCalledWith(
         expect.objectContaining({
           phone: '+919876512345',
+          message: expect.stringContaining('Greetings from Samy & Co!'),
+        })
+      );
+      expect(whatsappService.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          phone: '+919876567890',
           message: expect.stringContaining('Greetings from Samy & Co!'),
         })
       );

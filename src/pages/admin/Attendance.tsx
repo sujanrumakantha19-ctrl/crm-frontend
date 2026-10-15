@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Download, Calendar, User, AlertCircle } from 'lucide-react';
 import { useCalendar } from '@/hooks/useCalendar';
 import { Avatar } from '@/components/shared/Avatar';
@@ -31,6 +31,11 @@ export default function AdminAttendance() {
   const [dailyModalDate, setDailyModalDate] = useState<string | null>(null);
   const { exportInfo, setExportInfo, triggerDownload } = useExportContext();
 
+  // Employee-wise filter states
+  const [empMonthFilter, setEmpMonthFilter] = useState<'all' | number>('all');
+  const [empYearFilter, setEmpYearFilter] = useState<number>(today.getFullYear());
+  const [empStatusFilter, setEmpStatusFilter] = useState<string>('All');
+
   // Fetch staff users list once on mount
   useEffect(() => {
     userService.getAll({ role: 'staff', limit: 200 })
@@ -44,19 +49,31 @@ export default function AdminAttendance() {
       .catch(() => {});
   }, []);
 
-  // Fetch employee-specific records across all months when selectedStaffId changes
-  useEffect(() => {
+  // Fetch employee-specific records when selectedStaffId or month/year/status filters change
+  const refreshEmployeeRecords = useCallback(() => {
     if (!selectedStaffId) return;
-    let isMounted = true;
-    attendanceService.getDaily({ staffId: selectedStaffId, paginate: 'false' })
+    const queryParams: any = { staffId: selectedStaffId, paginate: 'false' };
+    if (empMonthFilter !== 'all') {
+      queryParams.month = `${empYearFilter}-${String(empMonthFilter).padStart(2, '0')}`;
+    } else {
+      queryParams.year = String(empYearFilter);
+    }
+    if (empStatusFilter && empStatusFilter !== 'All') {
+      queryParams.status = empStatusFilter;
+    }
+
+    attendanceService.getDaily(queryParams)
       .then(r => {
-        if (isMounted) setEmpApiRecords((r.data || []) as any[]);
+        setEmpApiRecords((r.data || []) as any[]);
       })
       .catch(() => {
-        if (isMounted) setEmpApiRecords([]);
+        setEmpApiRecords([]);
       });
-    return () => { isMounted = false; };
-  }, [selectedStaffId]);
+  }, [selectedStaffId, empMonthFilter, empYearFilter, empStatusFilter]);
+
+  useEffect(() => {
+    refreshEmployeeRecords();
+  }, [refreshEmployeeRecords]);
 
   // Fetch month-specific attendance records from backend whenever month or year changes
   useEffect(() => {
@@ -87,10 +104,6 @@ export default function AdminAttendance() {
   const [empPage, setEmpPage] = useState(1);
   const empPerPage = 12;
 
-  // Employee-wise filter states
-  const [empMonthFilter, setEmpMonthFilter] = useState<'all' | number>('all');
-  const [empYearFilter, setEmpYearFilter] = useState<number>(today.getFullYear());
-  const [empStatusFilter, setEmpStatusFilter] = useState<string>('All');
 
   const calendarDays = useCalendar(year, month);
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -106,256 +119,82 @@ export default function AdminAttendance() {
     else setMonth(m => m + 1);
   };
 
-  // Combine Real Backend Database Records with Default Fallback for Unlogged Days
+  // Direct mapping of Real Backend Database Records
   const allRecords = useMemo(() => {
-    const records: any[] = [];
-    const daysInMonth = new Date(year, month, 0).getDate();
-    const realToday = new Date();
-    realToday.setHours(23, 59, 59, 999);
-
-    // Map existing backend API records by staffId and date
-    const apiMap = new Map<string, any[]>();
-    apiRecords.forEach(r => {
+    return apiRecords.map(r => {
       const sId = String(r.staffId || r.userId || (r.user?.id || r.user));
-      const key = `${sId}-${r.date}`;
-      if (!apiMap.has(key)) apiMap.set(key, []);
-      apiMap.get(key)!.push({
+      const staff = staffUsers.find(s => String(s.id || (s as any)._id) === sId);
+      const staffName = r.staffName || staff?.name || r.user?.name || 'Staff User';
+      const role = r.role || staff?.designation || r.user?.designation || 'Sales Executive';
+      const duration = r.formattedDuration || r.duration || '-';
+      const firstCheckIn = r.firstCheckIn || r.checkIn || '-';
+      const lastCheckOut = r.lastCheckOut || r.checkOut || '-';
+      const hasOverride = Boolean(r.hasOverride ?? r.isOverridden);
+
+      return {
         ...r,
-        id: r.id || r._id,
+        id: r.id || r._id || `${sId}-${r.date}`,
         staffId: sId,
-        staffName: r.staffName || r.user?.name || 'Staff User',
-        role: r.role || r.designation || 'Sales Executive',
-      });
+        staffName,
+        role,
+        date: r.date,
+        status: r.status,
+        duration,
+        formattedDuration: duration,
+        firstCheckIn,
+        lastCheckOut,
+        checkIn: firstCheckIn,
+        checkOut: lastCheckOut,
+        hasOverride,
+        isOverridden: hasOverride,
+        isLate: Boolean(r.isLate),
+        activityType: r.activityType || (r.sessions && r.sessions[0]?.activityType) || '-',
+        location: r.location || (r.sessions && r.sessions[0]?.location) || '-',
+        project: r.project || (r.sessions && (r.sessions[0]?.projectName || r.sessions[0]?.project?.name)) || '-',
+        sessions: r.sessions || [],
+      };
     });
+  }, [apiRecords, staffUsers]);
 
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const dateObj = new Date(year, month - 1, day);
-      const dayOfWeek = dateObj.getDay();
-      const isFuture = dateObj > realToday;
-
-      staffUsers.forEach(staff => {
-        const sId = String(staff.id || (staff as any)._id);
-        const key = `${sId}-${dateStr}`;
-        const joiningDateStr = (staff as any).joiningDate
-          ? new Date((staff as any).joiningDate).toISOString().split('T')[0]
-          : null;
-
-        // 1. If real MongoDB attendance records exist for this staff + date, use ALL real DB records!
-        if (apiMap.has(key) && apiMap.get(key)!.length > 0) {
-          apiMap.get(key)!.forEach(realRec => {
-            records.push({
-              ...realRec,
-              staffName: staff.name || realRec.staffName,
-              role: staff.designation || realRec.role || 'Sales Executive',
-            });
-          });
-          return;
-        }
-
-        // 2. If date is before staff joined the company -> Not Joined
-        if (joiningDateStr && dateStr < joiningDateStr) {
-          records.push({
-            id: `notjoined-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Not Joined',
-            location: '—',
-            project: '—',
-            checkIn: '—',
-            checkOut: '—',
-            duration: '—',
-            activityType: '—',
-          });
-          return;
-        }
-
-        // 3. Otherwise: Sunday is Weekly Off
-        if (dayOfWeek === 0) {
-          records.push({
-            id: `off-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Weekly Off',
-            location: '-',
-            project: '-',
-            checkIn: '-',
-            checkOut: '-',
-            duration: '-',
-            activityType: '-',
-          });
-          return;
-        }
-
-        // 4. Future dates are Scheduled
-        if (isFuture) {
-          records.push({
-            id: `future-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Scheduled',
-            location: '-',
-            project: '-',
-            checkIn: '-',
-            checkOut: '-',
-            duration: '-',
-            activityType: '-',
-          });
-          return;
-        }
-
-        // 5. Past / Current working dates with NO DB record -> ABSENT
-        records.push({
-          id: `absent-${sId}-${dateStr}`,
-          staffId: sId,
-          staffName: staff.name,
-          role: staff.designation || 'Sales Executive',
-          date: dateStr,
-          status: 'Absent',
-          location: '-',
-          project: '-',
-          checkIn: '-',
-          checkOut: '-',
-          duration: '-',
-          activityType: '-',
-        });
-      });
-    }
-
-    return records;
-  }, [year, month, staffUsers, apiRecords]);
-
-  // Employee-wise attendance records (100% backend driven with Absent / Off / Scheduled defaults)
+  // Employee-wise attendance records mapped directly from backend database records
   const generatedRecordsForEmployee = useMemo(() => {
     if (activeTab !== 'employee' || !selectedStaffId) return [];
 
     const staff = staffUsers.find(s => String(s.id || (s as any)._id) === String(selectedStaffId));
-    if (!staff) return [];
+    const sId = String(selectedStaffId);
 
-    const sId = String(staff.id || (staff as any)._id);
-    const records: any[] = [];
-    const monthsToGenerate = empMonthFilter === 'all' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : [empMonthFilter];
-    const realToday = new Date();
-    realToday.setHours(23, 59, 59, 999);
+    return empApiRecords.map(r => {
+      const staffName = r.staffName || staff?.name || 'Staff User';
+      const role = r.role || staff?.designation || 'Sales Executive';
+      const duration = r.formattedDuration || r.duration || '-';
+      const firstCheckIn = r.firstCheckIn || r.checkIn || '-';
+      const lastCheckOut = r.lastCheckOut || r.checkOut || '-';
+      const hasOverride = Boolean(r.hasOverride ?? r.isOverridden);
 
-    // Map real API records for this employee (combining calendar month records and employee-specific records)
-    const apiMap = new Map<string, any[]>();
-    const combinedRecords = [...apiRecords, ...empApiRecords];
-    combinedRecords.forEach(r => {
-      const recStaffId = String(r.staffId || r.userId || (r.user?.id || r.user));
-      if (recStaffId === sId) {
-        if (!apiMap.has(r.date)) apiMap.set(r.date, []);
-        const existing = apiMap.get(r.date)!;
-        const recId = String(r.id || r._id);
-        if (!existing.some(e => String(e.id || e._id) === recId)) {
-          existing.push({
-            ...r,
-            id: recId,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-          });
-        }
-      }
+      return {
+        ...r,
+        id: r.id || r._id || `${sId}-${r.date}`,
+        staffId: sId,
+        staffName,
+        role,
+        date: r.date,
+        status: r.status,
+        duration,
+        formattedDuration: duration,
+        firstCheckIn,
+        lastCheckOut,
+        checkIn: firstCheckIn,
+        checkOut: lastCheckOut,
+        hasOverride,
+        isOverridden: hasOverride,
+        isLate: Boolean(r.isLate),
+        activityType: r.activityType || (r.sessions && r.sessions[0]?.activityType) || '-',
+        location: r.location || (r.sessions && r.sessions[0]?.location) || '-',
+        project: r.project || (r.sessions && (r.sessions[0]?.projectName || r.sessions[0]?.project?.name)) || '-',
+        sessions: r.sessions || [],
+      };
     });
-
-    const joiningDateStr = (staff as any).joiningDate
-      ? new Date((staff as any).joiningDate).toISOString().split('T')[0]
-      : null;
-
-    monthsToGenerate.forEach(m => {
-      const daysInMonth = new Date(empYearFilter, m, 0).getDate();
-      for (let day = 1; day <= daysInMonth; day++) {
-        const dateStr = `${empYearFilter}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const dateObj = new Date(empYearFilter, m - 1, day);
-        const dayOfWeek = dateObj.getDay();
-        const isFuture = dateObj > realToday;
-
-        if (apiMap.has(dateStr) && apiMap.get(dateStr)!.length > 0) {
-          apiMap.get(dateStr)!.forEach(realRec => records.push(realRec));
-          continue;
-        }
-
-        // If date is before staff joined the company -> Not Joined
-        if (joiningDateStr && dateStr < joiningDateStr) {
-          records.push({
-            id: `notjoined-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Not Joined',
-            location: '—',
-            project: '—',
-            checkIn: '—',
-            checkOut: '—',
-            duration: '—',
-            activityType: '—',
-          });
-          continue;
-        }
-
-        if (dayOfWeek === 0) {
-          records.push({
-            id: `off-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Weekly Off',
-            location: '-',
-            project: '-',
-            checkIn: '-',
-            checkOut: '-',
-            duration: '-',
-            activityType: '-',
-          });
-          continue;
-        }
-
-        if (isFuture) {
-          records.push({
-            id: `future-${sId}-${dateStr}`,
-            staffId: sId,
-            staffName: staff.name,
-            role: staff.designation || 'Sales Executive',
-            date: dateStr,
-            status: 'Scheduled',
-            location: '-',
-            project: '-',
-            checkIn: '-',
-            checkOut: '-',
-            duration: '-',
-            activityType: '-',
-          });
-          continue;
-        }
-
-        records.push({
-          id: `absent-${sId}-${dateStr}`,
-          staffId: sId,
-          staffName: staff.name,
-          role: staff.designation || 'Sales Executive',
-          date: dateStr,
-          status: 'Absent',
-          location: '-',
-          project: '-',
-          checkIn: '-',
-          checkOut: '-',
-          duration: '-',
-          activityType: '-',
-        });
-      }
-    });
-
-    return records;
-  }, [activeTab, selectedStaffId, empMonthFilter, empYearFilter, staffUsers, apiRecords, empApiRecords]);
+  }, [activeTab, selectedStaffId, staffUsers, empApiRecords]);
 
   useEffect(() => {
     setEmpPage(1);
@@ -454,9 +293,27 @@ export default function AdminAttendance() {
 
   // Allow admins to persist Absent / Half Day / Present for a staff member on a date via daily overrides.
   const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
-  const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{ rec: any; newStatus: string; activeSessionIds?: string[] } | null>(null);
+  const [manualOverridePrompt, setManualOverridePrompt] = useState<{
+    rec: any;
+    newStatus: string;
+  } | null>(null);
+  const [manualOverrideReason, setManualOverrideReason] = useState('');
+  const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{
+    rec: any;
+    newStatus: string;
+    activeSessionIds: string[];
+    checkInTimes: string[];
+    staffName: string;
+  } | null>(null);
+  const [overrideReasonInput, setOverrideReasonInput] = useState('');
 
-  const handleStatusChange = async (rec: any, newStatus: string, confirmed = false, customActiveIds?: string[]) => {
+  const handleStatusChange = async (
+    rec: any,
+    newStatus: string,
+    confirmed = false,
+    customActiveIds?: string[],
+    userReason?: string
+  ) => {
     if (!newStatus || (newStatus === rec.status && newStatus !== 'Reset')) return;
 
     if (newStatus === 'Reset' || newStatus === 'Remove') {
@@ -475,6 +332,7 @@ export default function AdminAttendance() {
             return [...others, ...res.data.filter((r: any) => String(r.staffId || r.userId || r.user?.id) === rec.staffId)];
           });
         }
+        refreshEmployeeRecords();
       } catch (err: any) {
         toast.error(err.message || 'Failed to remove override');
       } finally {
@@ -483,37 +341,26 @@ export default function AdminAttendance() {
       return;
     }
 
-    const isCheckedIn = (rec.checkIn && rec.checkIn !== '-') && (!rec.checkOut || rec.checkOut === '-');
-    if (newStatus === 'Absent' && isCheckedIn && !confirmed) {
-      const activeIds = customActiveIds || (rec.sessions
-        ? rec.sessions.filter((s: any) => !s.checkOut || s.checkOut === '-' || s.checkOut === '—').map((s: any) => String(s.id || s._id))
-        : (rec.id && !String(rec.id).startsWith('absent-') ? [String(rec.id)] : []));
-      setActiveOverrideConfirm({ rec, newStatus, activeSessionIds: activeIds });
-      return;
-    }
-
     setSavingStatusId(rec.id);
     try {
-      const activeIds = customActiveIds || (rec.sessions
-        ? rec.sessions.filter((s: any) => !s.checkOut || s.checkOut === '-' || s.checkOut === '—').map((s: any) => String(s.id || s._id))
-        : (isCheckedIn && rec.id && !String(rec.id).startsWith('absent-') ? [String(rec.id)] : []));
-
-      await attendanceService.setOverride({
+      const payload: any = {
         staffId: rec.staffId,
         date: rec.date,
         status: newStatus,
-        reason: confirmed
-          ? `Admin confirmed override to ${newStatus} for active session`
-          : `Admin manually set daily status to ${newStatus}`,
-        notes: confirmed
-          ? `Admin confirmed override to ${newStatus} for active session`
-          : `Admin manually set daily status to ${newStatus}`,
-        acknowledgedSessionIds: (newStatus === 'Absent' && activeIds.length > 0) ? activeIds : undefined,
-      });
+        reason: (userReason || '').trim() || (confirmed ? `Admin confirmed override to ${newStatus}` : `Admin manual override to ${newStatus}`),
+        notes: (userReason || '').trim() || (confirmed ? `Admin confirmed override to ${newStatus}` : `Admin manual override to ${newStatus}`),
+      };
+
+      if (confirmed && customActiveIds && customActiveIds.length > 0) {
+        payload.acknowledgedSessionIds = customActiveIds;
+        payload.confirmActiveOverride = true;
+      }
+
+      await attendanceService.setOverride(payload);
 
       toast.success(`${rec.staffName} marked as ${newStatus} for ${formatDateStr(rec.date)}`);
 
-      // Reload daily records for this date
+      // Reload daily records for this date and refresh selected employee history
       const res = await attendanceService.getDaily({ date: rec.date, paginate: 'false' });
       if (res.data && Array.isArray(res.data)) {
         setApiRecords(prev => {
@@ -521,10 +368,19 @@ export default function AdminAttendance() {
           return [...others, ...res.data.filter((r: any) => String(r.staffId || r.userId || r.user?.id) === rec.staffId)];
         });
       }
+      refreshEmployeeRecords();
     } catch (err: any) {
-      if (err.data?.activeSessionIds || err.code === 'ACTIVE_SESSION_OVERRIDE_CONFIRMATION_REQUIRED' || err.status === 409 || err.message?.includes('409') || err.message?.includes('checked in')) {
-        const ids = err.data?.activeSessionIds || (rec.sessions ? rec.sessions.map((s: any) => String(s.id || s._id)) : []);
-        setActiveOverrideConfirm({ rec, newStatus, activeSessionIds: ids });
+      if (err.status === 409 || err.code === 'ACTIVE_SESSION_OVERRIDE_CONFIRMATION_REQUIRED' || err.data?.activeSessionIds) {
+        const ids: string[] = err.data?.activeSessionIds || (err.data?.activeSessionId ? [String(err.data.activeSessionId)] : []);
+        const times: string[] = err.data?.checkInTimes || (err.data?.checkIn ? [String(err.data.checkIn)] : (rec.checkIn && rec.checkIn !== '-' ? [rec.checkIn] : []));
+        setActiveOverrideConfirm({
+          rec,
+          newStatus,
+          activeSessionIds: ids,
+          checkInTimes: times,
+          staffName: rec.staffName || 'Staff Member',
+        });
+        setOverrideReasonInput(userReason || '');
       } else {
         toast.error(err.message || `Failed to update ${rec.staffName}'s status`);
       }
@@ -948,7 +804,33 @@ export default function AdminAttendance() {
                             {formatDateStr(rec.date)}
                           </td>
                           <td className="px-5 py-3">
-                            <StatusBadge status={rec.status} />
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={rec.status} />
+                              {role === 'admin' && (
+                                <select
+                                  value=""
+                                  disabled={savingStatusId === rec.id}
+                                  onChange={e => {
+                                    const val = e.target.value;
+                                    if (!val) return;
+                                    if (val === 'Reset') {
+                                      handleStatusChange(rec, 'Reset');
+                                    } else {
+                                      setManualOverridePrompt({ rec, newStatus: val });
+                                      setManualOverrideReason('');
+                                    }
+                                  }}
+                                  className="text-[10px] font-semibold border border-slate-200 rounded px-1.5 py-0.5 bg-white text-slate-600 hover:border-brand-blue outline-none transition-colors cursor-pointer disabled:opacity-50"
+                                  title="Change status"
+                                >
+                                  <option value="" disabled>Set…</option>
+                                  <option value="Present">Present</option>
+                                  <option value="Half Day">Half Day</option>
+                                  <option value="Absent">Absent</option>
+                                  <option value="Reset">Reset Override</option>
+                                </select>
+                              )}
+                            </div>
                           </td>
                           <td className="px-5 py-3 text-xs">
                             {rec.status === 'Absent' || rec.status === 'Weekly Off' || rec.status === 'Scheduled' || !rec.activityType || rec.activityType === '-' ? (
@@ -1139,7 +1021,16 @@ export default function AdminAttendance() {
                               <select
                                 value=""
                                 disabled={savingStatusId === rec.id}
-                                onChange={e => handleStatusChange(rec, e.target.value)}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  if (!val) return;
+                                  if (val === 'Reset') {
+                                    handleStatusChange(rec, 'Reset');
+                                  } else {
+                                    setManualOverridePrompt({ rec, newStatus: val });
+                                    setManualOverrideReason('');
+                                  }
+                                }}
                                 className="text-[10px] font-semibold border border-slate-200 rounded px-1.5 py-0.5 bg-white text-slate-600 hover:border-brand-blue outline-none transition-colors cursor-pointer disabled:opacity-50"
                                 title="Change status"
                               >
@@ -1200,20 +1091,133 @@ export default function AdminAttendance() {
         </Modal>
       )}
 
-      {activeOverrideConfirm && (
-        <ConfirmDialog
-          open={!!activeOverrideConfirm}
-          onClose={() => setActiveOverrideConfirm(null)}
-          onConfirm={async () => {
-            const { rec, newStatus, activeSessionIds } = activeOverrideConfirm;
-            setActiveOverrideConfirm(null);
-            await handleStatusChange(rec, newStatus, true, activeSessionIds);
+      {manualOverridePrompt && (
+        <Modal
+          open={!!manualOverridePrompt}
+          onClose={() => {
+            setManualOverridePrompt(null);
+            setManualOverrideReason('');
           }}
-          title="Staff Member Is Currently Checked In"
-          message={`This staff member is currently checked in (Check-in time: ${activeOverrideConfirm.rec.checkIn}). Marking this day Absent will override their daily attendance record without checking them out. They will still be able to check out normally. Continue?`}
-          confirmLabel="Mark Absent"
-          variant="warning"
-        />
+          title={`Manual Attendance Override — ${manualOverridePrompt.rec.staffName || 'Staff Member'}`}
+          size="md"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-xs leading-relaxed">
+              Marking <span className="font-bold">{manualOverridePrompt.rec.staffName}</span> as <span className="font-bold text-slate-900">{manualOverridePrompt.newStatus}</span> for <span className="font-semibold">{formatDateStr(manualOverridePrompt.rec.date)}</span>.
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Override Reason <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                value={manualOverrideReason}
+                onChange={e => setManualOverrideReason(e.target.value)}
+                placeholder="Enter non-blank reason for manual attendance override..."
+                rows={3}
+                className="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:border-brand-blue outline-none resize-none"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setManualOverridePrompt(null);
+                  setManualOverrideReason('');
+                }}
+                className="px-3.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!manualOverrideReason.trim()}
+                onClick={async () => {
+                  const { rec, newStatus } = manualOverridePrompt;
+                  const reason = manualOverrideReason.trim();
+                  setManualOverridePrompt(null);
+                  setManualOverrideReason('');
+                  await handleStatusChange(rec, newStatus, false, undefined, reason);
+                }}
+                className="px-4 py-1.5 bg-brand-blue hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold transition-colors shadow-sm"
+              >
+                Apply Override
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {activeOverrideConfirm && (
+        <Modal
+          open={!!activeOverrideConfirm}
+          onClose={() => {
+            setActiveOverrideConfirm(null);
+            setOverrideReasonInput('');
+          }}
+          title="Staff Member Has Active Punch Session"
+          size="md"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-xs leading-relaxed">
+              <span className="font-bold">{activeOverrideConfirm.staffName}</span> has an active punch session on {formatDateStr(activeOverrideConfirm.rec.date)}. Marking this day {activeOverrideConfirm.newStatus} will set an admin daily override without closing or altering the running punch session.
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Active Punch Session(s):</span>
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                {activeOverrideConfirm.activeSessionIds.map((id, idx) => (
+                  <div key={id} className="flex items-center justify-between font-mono text-[11px] bg-slate-50 p-2 rounded border border-slate-200">
+                    <span>Session ID: <strong className="font-semibold text-slate-800">{id}</strong></span>
+                    <span>Check-in: <strong className="font-semibold text-emerald-700">{activeOverrideConfirm.checkInTimes[idx] || activeOverrideConfirm.rec.checkIn || 'Active'}</strong></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Override Reason <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                value={overrideReasonInput}
+                onChange={e => setOverrideReasonInput(e.target.value)}
+                placeholder="Enter non-blank reason for overriding active attendance..."
+                rows={2}
+                className="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:border-brand-blue outline-none resize-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveOverrideConfirm(null);
+                  setOverrideReasonInput('');
+                }}
+                className="px-3.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!overrideReasonInput.trim()}
+                onClick={async () => {
+                  const { rec, newStatus, activeSessionIds } = activeOverrideConfirm;
+                  const reason = overrideReasonInput.trim();
+                  setActiveOverrideConfirm(null);
+                  setOverrideReasonInput('');
+                  await handleStatusChange(rec, newStatus, true, activeSessionIds, reason);
+                }}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold transition-colors shadow-sm"
+              >
+                Confirm Override
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );

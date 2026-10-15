@@ -17,6 +17,9 @@ export const attendanceService = {
   getToday() {
     return api.get<AttendanceRecord[]>('/attendance/today');
   },
+  getActive() {
+    return api.get<AttendanceRecord | null>('/attendance/active');
+  },
   getTodayPresence(params?: Record<string, string | number | undefined>) {
     return params
       ? api.get<StaffPresenceToday[]>('/attendance/presence/today', params)

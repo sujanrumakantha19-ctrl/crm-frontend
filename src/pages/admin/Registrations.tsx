@@ -296,7 +296,7 @@ const resolveAssignedStaff = (
 export default function AdminRegistrations() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { role, userId } = useAuth();
+  const { role, userId, user } = useAuth();
 
   /* ── tabs & filter state ── */
   const [activeTab, setActiveTab] = useState<TabType>(() => {

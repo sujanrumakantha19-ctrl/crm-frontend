@@ -28,7 +28,15 @@ export const groupService = {
   delete(id: string) {
     return api.delete(`/groups/${id}`);
   },
-  addMember(groupId: string, userId: string, expectedCurrentGroupId?: string) {
+  addMember(groupId: string, userId: string, options?: { expectedCurrentGroupId?: string | null } | string | null) {
+    let expectedCurrentGroupId: string | null | undefined = undefined;
+    if (options !== undefined) {
+      if (typeof options === 'object' && options !== null) {
+        expectedCurrentGroupId = options.expectedCurrentGroupId;
+      } else {
+        expectedCurrentGroupId = options;
+      }
+    }
     return api.post(`/groups/${groupId}/members`, { userId, expectedCurrentGroupId });
   },
   removeMember(groupId: string, userId: string) {

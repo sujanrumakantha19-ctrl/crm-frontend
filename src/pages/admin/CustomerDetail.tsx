@@ -159,7 +159,7 @@ function PlotCard({ plot, role = 'admin' }: { plot: Plot; role?: string }) {
           <div><span className="text-slate-400">Type:</span> <span className="font-semibold text-slate-800">{plot.type}</span></div>
           <div>
             <span className="text-slate-400">Payment:</span>{' '}
-            <span className={`font-bold ${plot.bookedBy?.paymentStatus === 'Fully Paid' || plot.bookedBy?.paymentStatus === 'Advance Paid' ? 'text-emerald-700' : plot.bookedBy?.paymentStatus === 'Partially Paid' ? 'text-amber-700' : 'text-rose-600'}`}>
+            <span className={`font-bold ${plot.bookedBy?.paymentStatus === 'Fully Paid' ? 'text-emerald-700' : plot.bookedBy?.paymentStatus === 'Partially Paid' ? 'text-amber-700' : 'text-rose-600'}`}>
               {plot.bookedBy?.paymentStatus || 'Not Paid'}
             </span>
           </div>
@@ -707,7 +707,7 @@ export default function AdminCustomerDetail() {
       let assigneeInitials = 'AD';
 
       if (lead && lead.assignedTo) {
-        const rawAssignedTo = lead.assignedTo;
+        const rawAssignedTo: any = lead.assignedTo;
         const aId = typeof rawAssignedTo === 'object' && rawAssignedTo !== null
           ? (rawAssignedTo._id || rawAssignedTo.id)
           : rawAssignedTo;
@@ -799,7 +799,7 @@ export default function AdminCustomerDetail() {
         }
       ];
 
-      await Promise.allSettled(tasksToCreate.map(t => taskService.create(t)));
+      await Promise.allSettled(tasksToCreate.map(t => taskService.create(t as any)));
       toast.success('This plot is registered. Other bookings for this customer stay in Upcoming.');
       setConfirmRegModalOpen(false);
       const [lRes, bookingRes] = await Promise.allSettled([
@@ -1294,7 +1294,7 @@ export default function AdminCustomerDetail() {
                   {plots.map(plot => {
                     const plotId = plot.id || (plot as unknown as {_id:string})._id;
                     return (
-                      <PlotCard key={plotId} plot={plot} role={role} />
+                      <PlotCard key={plotId} plot={plot} role={role || undefined} />
                     );
                   })}
                 </div>

@@ -90,7 +90,14 @@ class ApiClient {
       if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
       return { success: true, data: null as T } as ApiResponse<T>;
     }
-    if (!res.ok) throw new Error((json as any).error || 'Request failed');
+    if (!res.ok) {
+      const message = (json as any).error || (json as any).message || `Request failed with status ${res.status}`;
+      const err: any = new Error(message);
+      err.status = res.status;
+      err.code = (json as any).code;
+      err.data = (json as any).data;
+      throw err;
+    }
     return json;
   }
 

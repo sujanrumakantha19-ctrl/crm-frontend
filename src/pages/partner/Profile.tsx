@@ -15,12 +15,11 @@ export default function PartnerProfile() {
   const user = authUser || profileUser;
 
   useEffect(() => {
-    if (!authUser?.id && !authUser?._id) {
+    const uid = authUser?.id || (authUser as any)?._id;
+    if (!uid) {
       setLoading(false);
       return;
     }
-    const uid = authUser.id || (authUser as any)._id;
-    if (!uid) { setLoading(false); return; }
     setLoading(true);
     userService.getById(uid)
       .then(res => {
@@ -29,7 +28,7 @@ export default function PartnerProfile() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [authUser?.id, authUser?._id]);
+  }, [authUser?.id, (authUser as any)?._id]);
 
   const initials = getInitials(user?.name || '');
   const avatarBg = (user as any)?.avatarBg || getAvatarColor(user?.name || '');

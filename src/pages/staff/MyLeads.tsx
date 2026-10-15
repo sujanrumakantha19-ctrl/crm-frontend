@@ -564,7 +564,11 @@ export default function StaffMyLeads() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {leadList.map(lead => {
             const lid = lead.id || (lead as unknown as { _id: string })._id;
-            const project = projects.find(p => (p.id || (p as unknown as { _id: string })._id) === lead.projectId);
+            const leadProjId = typeof lead.projectId === 'object' && lead.projectId !== null
+              ? (lead.projectId as any)._id || (lead.projectId as any).id
+              : lead.projectId;
+            const project = projects.find(p => (p.id || (p as unknown as { _id: string })._id) === leadProjId)
+              || (typeof lead.projectId === 'object' && lead.projectId !== null && (lead.projectId as any).name ? lead.projectId as any : undefined);
             const latestFollowUp = lead.followUps && lead.followUps.length > 0 ? lead.followUps[lead.followUps.length - 1] : null;
 
             return (

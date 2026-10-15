@@ -8,7 +8,7 @@ export const userService = {
   getById(id: string) {
     return api.get<User>(`/users/${id}`);
   },
-  create(data: Partial<User> & { password: string }) {
+  create(data: Partial<User> & { password?: string }) {
     return api.post<User>('/users', data);
   },
   update(id: string, data: Partial<User>) {

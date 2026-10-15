@@ -16,6 +16,8 @@ import { FollowerAutocomplete } from '@/components/shared/FollowerAutocomplete';
 import { useExportContext } from '@/context/ExportContext';
 import { formatDate, getTodayStr } from '@/lib/utils';
 import { extraBookingCount, asEntityId, normPhone10, unionMergeByKeys, customerIdentityKeys, bookingSlotCount } from '@/lib/customerBookingRows';
+import type { Plot, Project, Lead } from '@/types';
+import type { ApiResponse } from '@/lib/api';
 
 /* ─── constants ─── */
 type SortOption = 'newest' | 'oldest' | 'name_asc' | 'name_desc';
@@ -629,7 +631,7 @@ export default function AdminCustomers() {
   const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
   const [editCustomerPlots, setEditCustomerPlots] = useState<Plot[]>([]);
   const [editSelectedPlotId, setEditSelectedPlotId] = useState<string>('lead_default');
-  const [editPaymentStatus, setEditPaymentStatus] = useState('Not Paid');
+  const [editPaymentStatus, setEditPaymentStatus] = useState<string>('Not Paid');
   const [editPaymentMethod, setEditPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
   const [editInitialPaymentMethod, setEditInitialPaymentMethod] = useState<'CASH' | 'LOAN'>('CASH');
   const [editBank, setEditBank] = useState('');
@@ -829,7 +831,10 @@ export default function AdminCustomers() {
             ...(willRegister ? { registrationDate: editRegistrationDate } : {}),
             bookedBy: {
               ...targetPlot.bookedBy,
-              paymentStatus: editPaymentStatus,
+              name: targetPlot.bookedBy?.name || editingCustomer?.customerName || 'Customer',
+              phone: targetPlot.bookedBy?.phone || editingCustomer?.phone || '',
+              type: targetPlot.bookedBy?.type || 'customer',
+              paymentStatus: (editPaymentStatus === 'Fully Paid' || editPaymentStatus === 'Partially Paid' ? editPaymentStatus : 'Not Paid') as 'Not Paid' | 'Partially Paid' | 'Fully Paid',
               paymentMethod: editPaymentMethod,
               bank: bName,
               bankFollowerName: bFollower,

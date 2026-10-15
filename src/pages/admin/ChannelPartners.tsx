@@ -12,6 +12,7 @@ import { getInitials, getAvatarColor } from '@/data/mockData';
 import { useExportContext } from '@/context/ExportContext';
 import { getMaxDobStr } from '@/lib/utils';
 import { CardSkeletonGrid } from '@/components/shared/SkeletonLoader';
+import type { ChannelPartner, Lead } from '@/types';
 
 export default function AdminChannelPartners() {
   const navigate = useNavigate();
@@ -376,7 +377,7 @@ export default function AdminChannelPartners() {
         <CardSkeletonGrid count={6} />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-        {paginated.map(partner => {
+        {paginated.map((partner, idx) => {
           const perf = partnerPerformance.find(p => p.partner.id === partner.id);
           return (
             <div 
