@@ -216,13 +216,21 @@ const resolveAssignedStaff = (
   let name = '';
   let displayId = '';
 
+  // 0. Effective staff info from backend
+  if (plot.effectiveStaffName && !isMongoHexId(plot.effectiveStaffName)) {
+    name = plot.effectiveStaffName.trim();
+  }
+  if (plot.effectiveStaffDisplayId && !isMongoHexId(plot.effectiveStaffDisplayId)) {
+    displayId = plot.effectiveStaffDisplayId.trim();
+  }
+
   // 1. Direct bookedBy staff info
   const bStaffName = plot.bookedBy?.staffName?.trim();
   const bStaffDisplay = plot.bookedBy?.staffDisplayId?.trim();
-  if (bStaffName && !isMongoHexId(bStaffName)) {
+  if (!name && bStaffName && !isMongoHexId(bStaffName)) {
     name = bStaffName;
   }
-  if (bStaffDisplay && !isMongoHexId(bStaffDisplay)) {
+  if (!displayId && bStaffDisplay && !isMongoHexId(bStaffDisplay)) {
     displayId = bStaffDisplay;
   }
 
@@ -332,11 +340,16 @@ export default function AdminRegistrations() {
     }
   }, [location.search]);
 
-  const debouncedSearch = useDebounce(filters.search, 500);
+  const [searchInput, setSearchInput] = useState(filters.search);
+  const debouncedSearch = useDebounce(searchInput, 500);
+
+  useEffect(() => {
+    setFilters(prev => (prev.search === debouncedSearch ? prev : { ...prev, search: debouncedSearch }));
+  }, [debouncedSearch]);
 
   const committedFilters = useMemo<Filters>(
-    () => ({ ...filters, search: debouncedSearch }),
-    [filters, debouncedSearch],
+    () => filters,
+    [filters],
   );
 
   /* ── data state ── */
@@ -346,8 +359,11 @@ export default function AdminRegistrations() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+  const [totalPlots, setTotalPlots] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [allLeads, setAllLeads] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<{ id: string; name: string; displayId?: string; role: string }[]>([]);
@@ -369,19 +385,43 @@ export default function AdminRegistrations() {
   userIdRef.current = userId;
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
+  const fetchRequestIdRef = useRef(0);
 
-  /* ── fetch projects & all plots ── */
+  /* ── fetch projects & options with retryable error state ── */
+  const loadOptions = useCallback(async () => {
+    setOptionsError(null);
+    try {
+      const res = await plotService.getRegistrationOptions();
+      if (res?.data) {
+        if (Array.isArray(res.data.projects)) {
+          setAllProjects(res.data.projects.map((p: any) => ({
+            id: p.id || p._id,
+            _id: p.id || p._id,
+            name: p.name,
+            displayId: p.displayId,
+            location: p.location,
+            surveyNumber: p.surveyNumber
+          })));
+        }
+        if (Array.isArray(res.data.banks)) {
+          setAllBanks(res.data.banks);
+        }
+        if (Array.isArray(res.data.staff)) {
+          setAllUsers(res.data.staff.map((u: any) => ({
+            id: String(u.id || u._id),
+            name: u.name || '',
+            displayId: u.displayId || '',
+            role: u.role || 'staff'
+          })));
+        }
+      }
+    } catch (err: any) {
+      setOptionsError(err.message || 'Failed to load registration options');
+    }
+  }, []);
+
   useEffect(() => {
-    projectService.getAll({ limit: 100 }).then(res => {
-      setAllProjects((res.data || []).map((p: any) => ({
-        id: p.id || p._id,
-        _id: p.id || p._id,
-        name: p.name,
-        displayId: p.displayId,
-        location: p.location,
-        surveyNumber: p.surveyNumber
-      })));
-    }).catch(() => {});
+    void loadOptions();
 
     plotService.getAll({ limit: 500 }).then(res => {
       if (res.data) setAllPlots(res.data);
@@ -390,16 +430,7 @@ export default function AdminRegistrations() {
     leadService.getAll({ limit: 500 }).then(res => {
       if (res.data) setAllLeads(res.data);
     }).catch(() => {});
-
-    Promise.all([
-      userService.getAll({ role: 'admin', limit: 100 }).catch(() => ({ data: [] })),
-      userService.getAll({ role: 'staff', limit: 200 }).catch(() => ({ data: [] })),
-    ]).then(([adminRes, staffRes]) => {
-      const admins = (adminRes.data || []).map((u: any) => ({ id: String(u.id || u._id), name: u.name || '', displayId: u.displayId || '', role: 'admin' }));
-      const staff = (staffRes.data || []).map((u: any) => ({ id: String(u.id || u._id), name: u.name || '', displayId: u.displayId || '', role: 'staff' }));
-      setAllUsers([...admins, ...staff]);
-    });
-  }, []);
+  }, [loadOptions]);
 
   const getLeadForPlot = useCallback((plot: Plot) => {
     const custName = plot.bookedBy?.name || (plot as any).leadInfo?.customerName || '';
@@ -457,6 +488,15 @@ export default function AdminRegistrations() {
   /* ── stable fetch ── */
   const fetchPlots = useCallback(async (p = 1, { replace = true, showRefreshing = false } = {}) => {
     const f = filtersRef.current;
+    if (f.dateFrom && f.dateTo && f.dateFrom > f.dateTo) {
+      toast.error(`Invalid date range: Start date (${f.dateFrom}) cannot be after end date (${f.dateTo})`);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    setFetchError(null);
+    const reqId = ++fetchRequestIdRef.current;
     const tab = activeTabRef.current;
     const isStaff = roleRef.current === 'staff';
 
@@ -464,79 +504,68 @@ export default function AdminRegistrations() {
     else setLoading(true);
 
     try {
-      const params: Record<string, any> = { page: p, limit: 10 };
+      const params: Record<string, any> = {
+        page: p,
+        limit: 10,
+        groupBy: 'customer',
+        status: tab === 'registered' ? 'Registered' : 'Booked',
+      };
 
-      if (tab === 'registered') {
-        params.status = 'Registered';
-      } else {
-        params.status = 'Booked';
-      }
-
+      if (f.search && f.search.trim()) params.search = f.search.trim();
       if (f.projectFilter !== 'All') params.projectId = f.projectFilter;
-      if (f.paymentMethodFilter !== 'All') params['bookedBy.paymentMethod'] = f.paymentMethodFilter;
+      if (f.paymentMethodFilter !== 'All') params.paymentMethod = f.paymentMethodFilter;
       if (f.paymentMethodFilter === 'LOAN' && f.bankFilter && f.bankFilter !== 'All') {
-        params['bookedBy.bank'] = f.bankFilter;
+        params.bank = f.bankFilter;
       }
-      if (f.search) params.search = f.search;
-      params.groupBy = 'customer';
-
-
-      if (f.sortBy) {
-        if (f.sortBy === 'oldest') params.sort = 'createdAt';
-        else if (f.sortBy === 'customer_name') params.sort = 'bookedBy.name';
-        else params.sort = '-createdAt';
-      }
-
-      if (f.dateFrom || f.dateTo) {
-        const dateField = tab === 'registered' ? 'registrationDate' : 'expectedRegistrationDate';
-        if (f.dateFrom) params[`${dateField}[gte]`] = f.dateFrom;
-        if (f.dateTo) params[`${dateField}[lte]`] = f.dateTo;
-      }
-
-      if (f.paymentStatusFilter !== 'All') {
-        params.paymentStatusFilter = f.paymentStatusFilter;
-      }
+      if (f.paymentStatusFilter !== 'All') params.paymentStatusFilter = f.paymentStatusFilter;
+      if (f.loanStageFilter !== 'All') params.loanStageFilter = f.loanStageFilter;
+      if (f.bookedByFilter !== 'All') params.bookedByUserId = f.bookedByFilter;
+      if (f.sortBy) params.sort = f.sortBy;
+      if (f.dateFrom) params.dateFrom = f.dateFrom;
+      if (f.dateTo) params.dateTo = f.dateTo;
 
       let res: any;
       if (isStaff) {
-        params.assignedTo = userIdRef.current;
         res = await plotService.getMyBookings(params);
       } else {
         res = await plotService.getAll(params);
       }
 
-      // Discard stale response if active tab changed while request was in-flight
-      if (activeTabRef.current !== tab) return;
+      // Discard stale response if a newer request started or active tab changed
+      if (reqId !== fetchRequestIdRef.current || activeTabRef.current !== tab) return;
 
-      const rawData = (res?.data || []) as Plot[];
-      const data = rawData.filter(item => {
-        const itemStatus = item.status || (item.registrationDate ? 'Registered' : 'Booked');
-        return tab === 'registered' ? itemStatus === 'Registered' : itemStatus === 'Booked';
-      });
-      setPlots(prev => {
-        const combined = replace ? data : [...prev, ...data];
-        const seenIds = new Set<string>();
-        return combined.filter(p => {
-          const pid = String(p.id || (p as any)._id || '');
-          if (!pid || seenIds.has(pid)) return false;
-          seenIds.add(pid);
-          return true;
-        });
-      });
+      const data = (res?.data || []) as Plot[];
       const totalCount = res?.total ?? res?.count ?? data.length;
+      const totalPlotCount = res?.totalPlots ?? totalCount;
+
+      // Empty-page recovery: if an edit or deletion made this page empty, step back
+      if (p > 1 && data.length === 0 && totalCount > 0) {
+        const prevPage = Math.max(1, Math.min(p - 1, Math.ceil(totalCount / 10)));
+        return fetchPlots(prevPage, { replace, showRefreshing });
+      }
+
+      setPlots(data);
       setTotal(totalCount);
+      setTotalPlots(totalPlotCount);
       setTotalPages(Math.max(1, Math.ceil(totalCount / 10)));
       setPage(p);
 
-      const banks = data.map((p: any) => p.bookedBy?.bank).filter((b: string | undefined) => !!b && !!b.trim());
-      setAllBanks(prev => Array.from(new Set([...prev, ...banks])).sort());
+      const returnedBanks = data.map((p: any) => p.bookedBy?.bank).filter((b: string | undefined) => !!b && !!b.trim());
+      if (returnedBanks.length > 0) {
+        setAllBanks(prev => Array.from(new Set([...prev, ...returnedBanks])).sort());
+      }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to load registrations');
+      if (reqId === fetchRequestIdRef.current) {
+        setFetchError(err.message || 'Failed to load registrations');
+        toast.error(err.message || 'Failed to load registrations');
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (reqId === fetchRequestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [allUsers]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'registered' && filters.sortBy === 'expected_date') {
@@ -546,6 +575,9 @@ export default function AdminRegistrations() {
 
   useEffect(() => {
     fetchPlots(1);
+    return () => {
+      fetchRequestIdRef.current++;
+    };
   }, [activeTab, committedFilters, fetchPlots]);
 
   /* ── multi-booking helpers ── */
@@ -619,194 +651,8 @@ export default function AdminRegistrations() {
     [navigate, role, activeTab]
   );
 
-  /* ── client filter & sort ── */
-  /* ── filtered list returned directly from DB ── */
-  const filtered = useMemo(() => {
-    // Deduplicate by plot ID first
-    const seenIds = new Set<string>();
-    let result = plots.filter(p => {
-      const pid = String(p.id || (p as any)._id || '');
-      if (!pid || seenIds.has(pid)) return false;
-      seenIds.add(pid);
-      return true;
-    });
-
-    // Strictly enforce active tab status: Registered plots NEVER show in Upcoming, and Booked plots NEVER show in Registered
-    result = result.filter(p => {
-      const pStatus = p.status || (p.registrationDate ? 'Registered' : (p.expectedRegistrationDate ? 'Booked' : ''));
-      if (activeTab === 'registered') return pStatus === 'Registered';
-      if (activeTab === 'upcoming') return pStatus === 'Booked';
-      return true;
-    });
-
-    // Text search runs on the server (name, phone, project, customer ID L-912 / 912).
-    // Client re-filter was dropping rows (e.g. multi-plot customers missing displayId on one row).
-
-    // Payment status is filtered server-side via paymentStatusFilter param
-
-    if (filters.dateFrom || filters.dateTo) {
-      result = result.filter(p => {
-        const rawDate = activeTab === 'registered' ? p.registrationDate : p.expectedRegistrationDate;
-        if (!rawDate) return false;
-        const dStr = String(rawDate).split('T')[0];
-        if (filters.dateFrom && dStr < filters.dateFrom) return false;
-        if (filters.dateTo && dStr > filters.dateTo) return false;
-        return true;
-      });
-    }
-
-    // Apply Booked By filter
-    if (filters.bookedByFilter !== 'All') {
-      const filterVal = filters.bookedByFilter.toLowerCase().trim();
-      const targetUser = allUsers.find(u => u.name.toLowerCase().trim() === filterVal);
-      const targetId = targetUser?.id ? String(targetUser.id).toLowerCase() : '';
-
-      result = result.filter(plot => {
-        const matchedLead = getLeadForPlot(plot);
-        const assignedStaffObj = resolveAssignedStaff(plot, matchedLead, allUsers);
-        const assignedToText = (assignedStaffObj.name ? `${assignedStaffObj.name} ${assignedStaffObj.displayId || ''}` : (assignedStaffObj.displayId || '')).toLowerCase().trim();
-
-        const pAssignedTo = plot.assignedTo ? String(plot.assignedTo).toLowerCase().trim() : '';
-        const pAssignedToName = (plot as any).assignedToName ? String((plot as any).assignedToName).toLowerCase().trim() : '';
-        const lAssignedToId = matchedLead?.assignedTo ? String(matchedLead.assignedTo).toLowerCase().trim() : '';
-        const lAssignedToDisplayId = matchedLead?.assignedToDisplayId ? String(matchedLead.assignedToDisplayId).toLowerCase().trim() : '';
-        const lAssignedToName = matchedLead?.assignedToName ? String(matchedLead.assignedToName).toLowerCase().trim() : '';
-
-        return (
-          assignedToText.includes(filterVal) ||
-          (targetId && (pAssignedTo === targetId || lAssignedToId === targetId)) ||
-          (pAssignedTo && pAssignedTo === filterVal) ||
-          (pAssignedToName && pAssignedToName === filterVal) ||
-          (lAssignedToDisplayId && lAssignedToDisplayId === filterVal) ||
-          (lAssignedToName && lAssignedToName === filterVal)
-        );
-      });
-    }
-    if (filters.loanStageFilter !== 'All') {
-      result = result.filter(plot => {
-        const matchedLead = getLeadForPlot(plot);
-        const stage = plot.bookedBy?.loanStage || matchedLead?.loanStage || 'Not Applied';
-        return stage === filters.loanStageFilter;
-      });
-    }
-
-    const todayStr = getTodayStr();
-
-    // Get expected reg date for sorting (works for both tabs)
-    const getExpDate = (p: Plot): string => {
-      const d = p.expectedRegistrationDate ? String(p.expectedRegistrationDate).split('T')[0] : '';
-      return d;
-    };
-
-    const urgencyScore = (p: Plot): number => {
-      const d = getExpDate(p);
-      if (!d) return 9999;
-      if (d < todayStr) {
-        // Past overdue: highest priority, most overdue first
-        const diffDays = Math.floor((new Date(todayStr).getTime() - new Date(d).getTime()) / (1000 * 3600 * 24));
-        return -10000 + diffDays;
-      }
-      const diffFuture = Math.floor((new Date(d).getTime() - new Date(todayStr).getTime()) / (1000 * 3600 * 24));
-      return diffFuture;
-    };
-
-    // One customer row: extra plots AND extra projects show as +N, not extra table rows.
-    result = unionMergeByKeys(
-      result,
-      (p) => {
-        const lead = getLeadForPlot(p);
-        const info = (p as { leadInfo?: { phone?: string; displayId?: string; customerName?: string } }).leadInfo;
-        return customerIdentityKeys({
-          name: p.bookedBy?.name || lead?.customerName || info?.customerName,
-          phone: p.bookedBy?.phone || lead?.phone || info?.phone,
-          displayId: lead?.displayId || info?.displayId || customerDisplayIdByPhone.get(normPhone10(p.bookedBy?.phone || lead?.phone || info?.phone)),
-          leadId: asEntityId(p.bookedBy?.leadId || lead?.id || lead?._id || (info as any)?._id),
-        });
-      },
-      (existing, next) => mergePlotCustomerRows(existing, next, (a, b) => {
-        if (activeTab === 'registered') {
-          const existingDate = a.registrationDate ? new Date(a.registrationDate).getTime() : 0;
-          const newDate = b.registrationDate ? new Date(b.registrationDate).getTime() : 0;
-          return newDate > existingDate ? b : a;
-        }
-        const aCount = (a as Plot & { relatedBookingCount?: number }).relatedBookingCount || 1;
-        const bCount = (b as Plot & { relatedBookingCount?: number }).relatedBookingCount || 1;
-        if (bCount > aCount) return b;
-        return urgencyScore(b) < urgencyScore(a) ? b : a;
-      })
-    );
-
-    // Apply sorting selection dynamically based on user choice
-    const sortBy = filters.sortBy;
-    if (sortBy === 'customer_name') {
-      result.sort((a, b) => {
-        const nameA = (a.bookedBy?.name || (a as any).leadInfo?.customerName || '').toLowerCase().trim();
-        const nameB = (b.bookedBy?.name || (b as any).leadInfo?.customerName || '').toLowerCase().trim();
-        return nameA.localeCompare(nameB);
-      });
-    } else if (sortBy === 'oldest') {
-      result.sort((a, b) => {
-        const dateA = activeTab === 'registered' 
-          ? (a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime())
-          : (a.expectedRegistrationDate ? new Date(a.expectedRegistrationDate).getTime() : new Date((a as any).createdAt || 0).getTime());
-        const dateB = activeTab === 'registered' 
-          ? (b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime())
-          : (b.expectedRegistrationDate ? new Date(b.expectedRegistrationDate).getTime() : new Date((b as any).createdAt || 0).getTime());
-        return dateA - dateB;
-      });
-    } else if (sortBy === 'newest') {
-      result.sort((a, b) => {
-        const dateA = activeTab === 'registered' 
-          ? (a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime())
-          : (a.expectedRegistrationDate ? new Date(a.expectedRegistrationDate).getTime() : new Date((a as any).createdAt || 0).getTime());
-        const dateB = activeTab === 'registered' 
-          ? (b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime())
-          : (b.expectedRegistrationDate ? new Date(b.expectedRegistrationDate).getTime() : new Date((b as any).createdAt || 0).getTime());
-        return dateB - dateA;
-      });
-    } else if (sortBy === 'expected_date') {
-      result.sort((a, b) => urgencyScore(a) - urgencyScore(b));
-    } else {
-      if (activeTab === 'upcoming') {
-        result.sort((a, b) => urgencyScore(a) - urgencyScore(b));
-      } else {
-        result.sort((a, b) => {
-          const dateA = a.registrationDate ? new Date(a.registrationDate).getTime() : new Date((a as any).createdAt || 0).getTime();
-          const dateB = b.registrationDate ? new Date(b.registrationDate).getTime() : new Date((b as any).createdAt || 0).getTime();
-          return dateB - dateA;
-        });
-      }
-    }
-
-    const collapsed = new Map<string, typeof result[0]>();
-    result.forEach((p) => {
-      const lead = getLeadForPlot(p);
-      const info = (p as { leadInfo?: { phone?: string } }).leadInfo;
-      const phone = normPhone10(p.bookedBy?.phone || lead?.phone || info?.phone);
-      const displayId = (resolveCustomerDisplayId(p, lead, customerDisplayIdByPhone) || '').toUpperCase();
-      const key = phone ? `p:${phone}` : displayId ? `d:${displayId}` : plotRecordId(p);
-      const existing = collapsed.get(key);
-      if (!existing) {
-        collapsed.set(key, p);
-        return;
-      }
-      collapsed.set(key, mergePlotCustomerRows(existing, p, (a, b) => a));
-    });
-    const byDisplay = new Map<string, typeof result[0]>();
-    Array.from(collapsed.values()).forEach((p) => {
-      const lead = getLeadForPlot(p);
-      const displayId = (resolveCustomerDisplayId(p, lead, customerDisplayIdByPhone) || '').toUpperCase();
-      const phone = normPhone10(p.bookedBy?.phone || lead?.phone || (p as { leadInfo?: { phone?: string } }).leadInfo?.phone);
-      const key = displayId ? `d:${displayId}` : phone ? `p:${phone}` : plotRecordId(p);
-      const existing = byDisplay.get(key);
-      if (!existing) {
-        byDisplay.set(key, p);
-        return;
-      }
-      byDisplay.set(key, mergePlotCustomerRows(existing, p, (a, b) => a));
-    });
-    return Array.from(byDisplay.values());
-  }, [plots, activeTab, filters.sortBy, debouncedSearch, allProjects, getLeadForPlot, customerDisplayIdByPhone]);
+  /* ── Server already provides customer-grouped, filtered, and sorted records ── */
+  const filtered = useMemo(() => plots, [plots]);
 
   /* ── per-row selected booking plot map ── */
   const [selectedPlotMap, setSelectedPlotMap] = useState<Record<string, string>>({});
@@ -1042,7 +888,7 @@ export default function AdminRegistrations() {
     const pid = plotRecordId(plot);
     setEditSelectedPlotId(pid);
 
-    setEditPaymentStatus(plot.bookedBy?.paymentStatus || 'Not Paid');
+    setEditPaymentStatus(plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus || 'Not Paid');
     const method = plot.bookedBy?.paymentMethod === 'LOAN' ? 'LOAN' : 'CASH';
     setEditPaymentMethod(method);
     setEditInitialPaymentMethod(method);
@@ -1050,7 +896,7 @@ export default function AdminRegistrations() {
     setEditBankFollowerName(plot.bookedBy?.bankFollowerName ?? '');
     setEditBankFollowerPhone(plot.bookedBy?.bankFollowerPhone ?? '');
     const matchedL = getLeadForPlot(plot);
-    setEditLoanStage(plot.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
+    setEditLoanStage(plot.effectiveLoanStage || plot.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
 
     const targetDate = activeTab === 'registered' ? plot.registrationDate : plot.expectedRegistrationDate;
     setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
@@ -1084,7 +930,7 @@ export default function AdminRegistrations() {
     setEditSelectedPlotId(plotId);
     const target = editCustomerPlots.find(p => plotRecordId(p) === String(plotId));
     if (target) {
-      setEditPaymentStatus(target.bookedBy?.paymentStatus || 'Not Paid');
+      setEditPaymentStatus(target.effectivePaymentStatus || target.bookedBy?.paymentStatus || 'Not Paid');
       const method = target.bookedBy?.paymentMethod === 'LOAN' ? 'LOAN' : 'CASH';
       setEditPaymentMethod(method);
       setEditInitialPaymentMethod(method);
@@ -1092,7 +938,7 @@ export default function AdminRegistrations() {
       setEditBankFollowerName(target.bookedBy?.bankFollowerName ?? '');
       setEditBankFollowerPhone(target.bookedBy?.bankFollowerPhone ?? '');
       const matchedL = getLeadForPlot(target);
-      setEditLoanStage(target.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
+      setEditLoanStage(target.effectiveLoanStage || target.bookedBy?.loanStage || matchedL?.loanStage || 'Not Applied');
 
       const targetDate = activeTab === 'registered' ? target.registrationDate : target.expectedRegistrationDate;
       setEditDate(targetDate ? String(targetDate).split('T')[0] : '');
@@ -1201,13 +1047,24 @@ export default function AdminRegistrations() {
 
   /* ── helpers ── */
   const updateFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
-    setFilters(prev => ({ ...prev, [key]: value }));
+    setFilters(prev => {
+      const next = { ...prev, [key]: value };
+      if (key === 'paymentMethodFilter' && value !== 'LOAN') {
+        next.bankFilter = 'All';
+      }
+      return next;
+    });
+    setPage(1);
   };
 
-  const clearFilters = () => setFilters(DEFAULT_FILTERS);
+  const clearFilters = () => {
+    setSearchInput('');
+    setFilters(DEFAULT_FILTERS);
+    setPage(1);
+  };
 
-  const hasActiveFilters = committedFilters.projectFilter !== 'All' || committedFilters.paymentMethodFilter !== 'All' || committedFilters.paymentStatusFilter !== 'All' || committedFilters.bankFilter !== 'All' || committedFilters.bookedByFilter !== 'All' || committedFilters.loanStageFilter !== 'All' || committedFilters.sortBy !== 'newest' || !!committedFilters.dateFrom || !!committedFilters.dateTo;
-  const activeFilterCount = [committedFilters.projectFilter !== 'All', committedFilters.paymentMethodFilter !== 'All', committedFilters.paymentStatusFilter !== 'All', committedFilters.bankFilter !== 'All', committedFilters.bookedByFilter !== 'All', committedFilters.loanStageFilter !== 'All', committedFilters.sortBy !== 'newest', !!committedFilters.dateFrom, !!committedFilters.dateTo].filter(Boolean).length;
+  const hasActiveFilters = committedFilters.projectFilter !== 'All' || committedFilters.paymentMethodFilter !== 'All' || committedFilters.paymentStatusFilter !== 'All' || committedFilters.bankFilter !== 'All' || committedFilters.bookedByFilter !== 'All' || committedFilters.loanStageFilter !== 'All' || committedFilters.sortBy !== 'newest' || !!committedFilters.dateFrom || !!committedFilters.dateTo || !!searchInput.trim();
+  const activeFilterCount = [committedFilters.projectFilter !== 'All', committedFilters.paymentMethodFilter !== 'All', committedFilters.paymentStatusFilter !== 'All', committedFilters.bankFilter !== 'All', committedFilters.bookedByFilter !== 'All', committedFilters.loanStageFilter !== 'All', committedFilters.sortBy !== 'newest', !!committedFilters.dateFrom, !!committedFilters.dateTo, !!searchInput.trim()].filter(Boolean).length;
 
   const goToPage = (p: number) => {
     if (p < 1 || p > totalPages || p === page) return;
@@ -1243,7 +1100,7 @@ export default function AdminRegistrations() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-slate-900">{role === 'staff' ? 'My Registrations' : 'Registrations'}</h1>
-          <p className="text-sm text-slate-500 mt-0.5">{total} total plots</p>
+          <p className="text-sm text-slate-500 mt-0.5">{total} {total === 1 ? 'customer' : 'customers'} ({totalPlots} {totalPlots === 1 ? 'plot' : 'plots'})</p>
         </div>
       </div>
 
@@ -1258,6 +1115,7 @@ export default function AdminRegistrations() {
                 setActiveTab(tab.key);
                 setPlots([]);
                 setTotal(0);
+                setTotalPlots(0);
                 setTotalPages(1);
                 setPage(1);
               }}
@@ -1275,6 +1133,38 @@ export default function AdminRegistrations() {
         </p>
       )}
 
+      {optionsError && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-amber-600 shrink-0" />
+            <span>{optionsError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadOptions()}
+            className="px-3 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-md font-bold transition-all cursor-pointer shadow-xs"
+          >
+            Retry Options
+          </button>
+        </div>
+      )}
+
+      {fetchError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+            <span>{fetchError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchPlots(page)}
+            className="px-3 py-1 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-md font-bold transition-all cursor-pointer shadow-xs"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Filter Bar */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 shadow-sm">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -1283,17 +1173,24 @@ export default function AdminRegistrations() {
             <input
               type="text"
               placeholder="Search by customer name, Customer ID (L-...), Staff ID (STAFF-...), mobile, or project..."
-              value={filters.search}
-              onChange={e => updateFilter('search', e.target.value)}
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
               className="w-full h-10 pl-9 pr-8 border border-slate-200 rounded-lg text-sm focus:border-brand-green focus:ring-2 focus:ring-emerald-100 outline-none transition-all bg-white"
             />
-            {(refreshing || (filters.search !== debouncedSearch && filters.search.trim())) && (
+            {(refreshing || (searchInput !== filters.search && searchInput.trim())) && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
                 <div className="w-4 h-4 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
               </div>
             )}
-            {!refreshing && filters.search === debouncedSearch && filters.search && (
-              <button onClick={() => updateFilter('search', '')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+            {!refreshing && searchInput && (
+              <button
+                onClick={() => {
+                  setSearchInput('');
+                  setFilters(prev => ({ ...prev, search: '' }));
+                  setPage(1);
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
                 <X size={14} />
               </button>
             )}
@@ -1344,7 +1241,7 @@ export default function AdminRegistrations() {
             className="h-9 px-3 border border-slate-200 rounded-lg text-xs font-semibold bg-white focus:border-brand-green outline-none cursor-pointer"
           >
             <option value="All">All Projects</option>
-            {allProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {allProjects.map(p => <option key={p.id} value={p.id}>{p.name}{p.displayId ? ` [${p.displayId}]` : ''}</option>)}
           </select>
 
           {/* Payment Status Filter */}
@@ -1404,14 +1301,14 @@ export default function AdminRegistrations() {
               {allUsers.filter(u => u.role === 'admin').length > 0 && (
                 <optgroup label="── Admin ──">
                   {allUsers.filter(u => u.role === 'admin').map(u => (
-                    <option key={u.id} value={u.name}>{u.name}</option>
+                    <option key={u.id} value={u.id}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                   ))}
                 </optgroup>
               )}
               {allUsers.filter(u => u.role === 'staff').length > 0 && (
                 <optgroup label="── Staff ──">
                   {allUsers.filter(u => u.role === 'staff').map(u => (
-                    <option key={u.id} value={u.name}>{u.name}</option>
+                    <option key={u.id} value={u.id}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                   ))}
                 </optgroup>
               )}
@@ -1665,7 +1562,7 @@ export default function AdminRegistrations() {
 
                         {/* 7. Payment Status */}
                         <td className="px-4 py-3.5 whitespace-nowrap" onClick={openDetail}>
-                          <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
+                          <StatusBadge status={plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus || 'Not Paid'} />
                         </td>
 
                         {/* 8. Actions */}
@@ -1687,12 +1584,12 @@ export default function AdminRegistrations() {
                               </button>
                             </div>
                           ) : (
-                            plot.bookedBy?.paymentStatus !== 'Fully Paid' ? (
+                            (plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus) !== 'Fully Paid' ? (
                               <button
                                 onClick={e => {
                                   e.stopPropagation();
                                   setEditingPaymentPlot(plot);
-                                  setEditPaymentStatusVal(plot.bookedBy?.paymentStatus || 'Not Paid');
+                                  setEditPaymentStatusVal(plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus || 'Not Paid');
                                 }}
                                 className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-xs font-bold transition-all cursor-pointer shadow-xs"
                                 title="Update Payment Status"
@@ -1748,7 +1645,7 @@ export default function AdminRegistrations() {
                       <Avatar initials={getInitials(custName)} size="sm" bg={getAvatarColor(custName)} />
                       <span className="text-sm font-bold text-slate-900"><NameTag name={custName} displayId={resolveCustomerDisplayId(plot, matchedLeadM, customerDisplayIdByPhone)} /></span>
                     </div>
-                    <StatusBadge status={plot.bookedBy?.paymentStatus || 'Not Paid'} />
+                    <StatusBadge status={plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus || 'Not Paid'} />
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 mt-2">
                     <div><span className="text-slate-400">Phone:</span> {custPhone || '—'}</div>
@@ -1817,13 +1714,13 @@ export default function AdminRegistrations() {
                       </button>
                     </div>
                   ) : (
-                    plot.bookedBy?.paymentStatus !== 'Fully Paid' && (
+                    (plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus) !== 'Fully Paid' && (
                       <div className="mt-3 pt-3 border-t border-slate-100 flex justify-end gap-1.5">
                         <button
                           onClick={e => {
                             e.stopPropagation();
                             setEditingPaymentPlot(plot);
-                            setEditPaymentStatusVal(plot.bookedBy?.paymentStatus || 'Not Paid');
+                            setEditPaymentStatusVal(plot.effectivePaymentStatus || plot.bookedBy?.paymentStatus || 'Not Paid');
                           }}
                           className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-xs font-bold transition-all cursor-pointer shadow-xs"
                         >
@@ -2199,14 +2096,14 @@ export default function AdminRegistrations() {
                 {allUsers.filter(u => u.role === 'admin').length > 0 && (
                   <optgroup label="── Admin ──">
                     {allUsers.filter(u => u.role === 'admin').map(u => (
-                      <option key={u.id} value={u.name}>{u.name}</option>
+                      <option key={u.id} value={u.id}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                     ))}
                   </optgroup>
                 )}
                 {allUsers.filter(u => u.role === 'staff').length > 0 && (
                   <optgroup label="── Staff ──">
                     {allUsers.filter(u => u.role === 'staff').map(u => (
-                      <option key={u.id} value={u.name}>{u.name}</option>
+                      <option key={u.id} value={u.id}>{u.name}{u.displayId ? ` (${u.displayId})` : ''}</option>
                     ))}
                   </optgroup>
                 )}

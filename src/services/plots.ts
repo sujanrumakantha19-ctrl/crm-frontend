@@ -47,6 +47,13 @@ export const plotService = {
   getMyBookings(params?: Record<string, string | number | undefined>) {
     return api.get<Plot[]>('/plots/my-bookings', params);
   },
+  getRegistrationOptions() {
+    return api.get<{
+      projects: { id: string; _id?: string; name: string; displayId?: string; location?: string; surveyNumber?: string }[];
+      banks: string[];
+      staff: { id: string; _id?: string; name: string; displayId?: string; role: string }[];
+    }>('/plots/registration-options');
+  },
   delete(id: string) {
     return api.delete(`/plots/${id}`);
   },

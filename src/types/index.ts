@@ -123,6 +123,11 @@ export interface Plot {
   createdAt?: string;
   updatedAt?: string;
   price?: number;
+  effectivePaymentStatus?: string;
+  effectiveLoanStage?: string;
+  effectiveStaffId?: string;
+  effectiveStaffName?: string;
+  effectiveStaffDisplayId?: string;
 }
 
 export interface PlotApproval {

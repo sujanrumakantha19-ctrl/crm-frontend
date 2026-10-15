@@ -14,6 +14,7 @@ interface ApiResponse<T = unknown> {
   data: T;
   count?: number;
   total?: number;
+  totalPlots?: number;
   stats?: Record<string, number>;
   allocatedSqFt?: number;
   pagination?: {
