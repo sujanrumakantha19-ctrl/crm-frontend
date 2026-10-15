@@ -193,7 +193,15 @@ export interface FollowUp {
   nextAction: string;
 }
 
-export type AttendanceStatus = 'Present' | 'Absent' | 'Half Day';
+export type AttendanceStatus =
+  | 'Present'
+  | 'Absent'
+  | 'Half Day'
+  | 'In Progress'
+  | 'Needs Review'
+  | 'Weekly Off'
+  | 'Not Joined'
+  | 'Scheduled';
 
 export interface AttendanceRecord {
   id: string;
@@ -209,6 +217,53 @@ export interface AttendanceRecord {
   projectId?: string;
   projectName?: string;
   location?: string;
+}
+
+export interface StaffPresenceToday {
+  staffId: string;
+  name: string;
+  email: string;
+  initials: string;
+  designation: string;
+  phone: string;
+  avatarBg?: string | null;
+  todayDate: string;
+  presence: 'Present' | 'Absent';
+  firstCheckIn: string | null;
+  lastCheckOut: string | null;
+  hasActiveSession: boolean;
+  currentActivity?: string | null;
+  currentLocation?: string | null;
+  sessionsCount: number;
+}
+
+export interface TodayPresenceSummary {
+  date: string;
+  totalStaff: number;
+  presentCount: number;
+  absentCount: number;
+  activeCount: number;
+}
+
+export interface DailyAttendanceRecord {
+  staffId: string;
+  staffName: string;
+  email: string;
+  role: string;
+  date: string;
+  status: AttendanceStatus;
+  isOverridden: boolean;
+  overrideNotes?: string;
+  overriddenBy?: string | null;
+  totalMinutes: number;
+  formattedDuration: string;
+  sessionsCount: number;
+  firstCheckIn: string;
+  lastCheckOut: string;
+  hasActiveSession: boolean;
+  currentActivity?: string;
+  currentLocation?: string;
+  sessions?: any[];
 }
 
 export type TaskStatus = 'To Do' | 'In Progress' | 'In Review' | 'Done';

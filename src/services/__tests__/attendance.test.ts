@@ -41,6 +41,24 @@ describe('attendanceService', () => {
     expect(mockApi.get).toHaveBeenCalledWith('/attendance/today')
   })
 
+  it('getTodayPresence should call GET /attendance/presence/today', async () => {
+    mockApi.get.mockResolvedValue({ success: true, data: [] })
+    await attendanceService.getTodayPresence()
+    expect(mockApi.get).toHaveBeenCalledWith('/attendance/presence/today')
+  })
+
+  it('getDaily should call GET /attendance/daily with params', async () => {
+    mockApi.get.mockResolvedValue({ success: true, data: [] })
+    await attendanceService.getDaily({ date: '2024-01-15' })
+    expect(mockApi.get).toHaveBeenCalledWith('/attendance/daily', { date: '2024-01-15' })
+  })
+
+  it('setOverride should call POST /attendance/override', async () => {
+    mockApi.post.mockResolvedValue({ success: true, data: {} })
+    await attendanceService.setOverride({ staffId: 's1', date: '2024-01-15', status: 'Present' })
+    expect(mockApi.post).toHaveBeenCalledWith('/attendance/override', { staffId: 's1', date: '2024-01-15', status: 'Present' })
+  })
+
   it('create should call POST /attendance', async () => {
     mockApi.post.mockResolvedValue({ success: true, data: { id: 'new' } })
     await attendanceService.create({ staffId: 's1', status: 'Present' })

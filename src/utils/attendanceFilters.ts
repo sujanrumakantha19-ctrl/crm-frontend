@@ -21,20 +21,28 @@ export function matchesStatusFilter(recordStatus: string, durationStr: string, f
 
   if (filterValue === 'Present') {
     if (recordStatus === 'Present') return true;
-    if (hours >= 1.0) return true;
+    if (hours > 8.0) return true;
     return false;
   }
 
   if (filterValue === 'Half Day') {
     if (recordStatus === 'Half Day') return true;
-    if (hours >= 4.5 && hours <= 6.0) return true;
+    if (hours >= 4.0 && hours <= 8.0) return true;
     return false;
   }
 
-  if (filterValue === 'Below 4 Hours' || filterValue === '< 4 Hours' || filterValue === 'below_4') {
+  if (filterValue === 'Below 4 Hours' || filterValue === '< 4 Hours' || filterValue === 'below_4' || filterValue === 'Absent') {
+    if (recordStatus === 'Absent' || recordStatus === 'Below 4 Hours') return true;
     if (hours > 0 && hours < 4.0) return true;
-    if (recordStatus === 'Below 4 Hours') return true;
     return false;
+  }
+
+  if (filterValue === 'In Progress') {
+    return recordStatus === 'In Progress';
+  }
+
+  if (filterValue === 'Needs Review') {
+    return recordStatus === 'Needs Review';
   }
 
   return recordStatus === filterValue;

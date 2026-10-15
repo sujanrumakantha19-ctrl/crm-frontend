@@ -788,10 +788,12 @@ export default function AdminAttendance() {
                 className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm bg-white focus:border-brand-green outline-none transition-all cursor-pointer font-medium text-slate-700"
               >
                 <option value="All">All Statuses</option>
-                <option value="Present">Present</option>
-                <option value="Half Day">Half Day (4.5 to 6 hrs)</option>
-                <option value="Below 4 Hours">Below 4 Hours</option>
+                <option value="Present">Present (&gt; 8 hrs)</option>
+                <option value="Half Day">Half Day (4 to 8 hrs)</option>
+                <option value="Below 4 Hours">Below 4 Hours (&lt; 4 hrs)</option>
                 <option value="Absent">Absent</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Needs Review">Needs Review</option>
                 <option value="Weekly Off">Weekly Off</option>
                 <option value="Not Joined">Not Joined</option>
               </select>

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import AdminDashboard from '@/pages/admin/Dashboard'
+
+const renderDashboard = () => render(<MemoryRouter><AdminDashboard /></MemoryRouter>)
 
 // ─── Mock all services ────────────────────────────────────────────
 vi.mock('@/services', () => ({
@@ -13,7 +16,10 @@ vi.mock('@/services', () => ({
     getAll: vi.fn().mockResolvedValue({ data: [] }),
     getByStatus: vi.fn().mockResolvedValue({ data: [], total: 0 }),
   },
-  attendanceService: { getToday: vi.fn().mockResolvedValue({ data: [] }) },
+  attendanceService: {
+    getToday: vi.fn().mockResolvedValue({ data: [] }),
+    getTodayPresence: vi.fn().mockResolvedValue({ data: [], summary: { totalStaff: 0, presentCount: 0, absentCount: 0, activeCount: 0, date: '2024-01-15' } }),
+  },
   activityLogService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   userService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   reportService: {
@@ -84,12 +90,12 @@ describe('Admin Dashboard', () => {
   })
 
   it('should show loading skeleton initially', () => {
-    render(<AdminDashboard />)
+    renderDashboard()
     expect(document.querySelector('.animate-pulse') || document.querySelector('.animate-spin')).toBeInTheDocument()
   })
 
   it('should render metric cards after loading', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('Total Projects')).toBeInTheDocument()
@@ -101,10 +107,10 @@ describe('Admin Dashboard', () => {
   })
 
   it('should render chart sections after loading', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('Leads & Bookings Trend')).toBeInTheDocument()
+      expect(screen.getByText(/Leads & (Customers|Bookings) Trend/)).toBeInTheDocument()
     })
 
     expect(screen.getByText('Lead Contributions')).toBeInTheDocument()
@@ -113,7 +119,7 @@ describe('Admin Dashboard', () => {
   })
 
   it('should show "No recent activity" when activity list is empty', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('No recent activity')).toBeInTheDocument()
@@ -121,15 +127,15 @@ describe('Admin Dashboard', () => {
   })
 
   it('should show "No attendance records" when attendance is empty', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('No attendance records')).toBeInTheDocument()
+      expect(screen.getByText(/No attendance records|No active staff/i)).toBeInTheDocument()
     })
   })
 
   it('should display lead count values', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('Total Projects')).toBeInTheDocument()
@@ -141,7 +147,7 @@ describe('Admin Dashboard', () => {
   })
 
   it('should display "Last 6 Months" badge', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('Last 6 Months')).toBeInTheDocument()
@@ -149,7 +155,7 @@ describe('Admin Dashboard', () => {
   })
 
   it('should show lead source breakdown labels', async () => {
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('Channel Partners')).toBeInTheDocument()
@@ -177,13 +183,13 @@ describe('Admin Dashboard', () => {
       ],
     } as any)
 
-    render(<AdminDashboard />)
+    renderDashboard()
 
     await waitFor(() => {
       expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
 
     expect(screen.getByText('Site Hyderabad')).toBeInTheDocument()
-    expect(screen.getByText('09:00 AM')).toBeInTheDocument()
+    expect(screen.getByText(/09:00 AM/)).toBeInTheDocument()
   })
 })

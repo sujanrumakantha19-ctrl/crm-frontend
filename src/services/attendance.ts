@@ -1,5 +1,5 @@
 import { api } from '@/lib/api';
-import type { AttendanceRecord } from '@/types';
+import type { AttendanceRecord, StaffPresenceToday, TodayPresenceSummary, DailyAttendanceRecord } from '@/types';
 
 export const attendanceService = {
   getAll(params?: Record<string, string | number | undefined>) {
@@ -16,6 +16,15 @@ export const attendanceService = {
   },
   getToday() {
     return api.get<AttendanceRecord[]>('/attendance/today');
+  },
+  getTodayPresence() {
+    return api.get<{ data: StaffPresenceToday[]; summary: TodayPresenceSummary }>('/attendance/presence/today');
+  },
+  getDaily(params?: Record<string, string | number | undefined>) {
+    return api.get<{ data: DailyAttendanceRecord[]; summary: any; pagination: any }>('/attendance/daily', params);
+  },
+  setOverride(data: { staffId: string; date: string; status: string; notes?: string }) {
+    return api.post('/attendance/override', data);
   },
   create(data: Partial<AttendanceRecord>) {
     return api.post<AttendanceRecord>('/attendance', data);
