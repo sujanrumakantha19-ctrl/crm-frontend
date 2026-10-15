@@ -28,8 +28,8 @@ export const groupService = {
   delete(id: string) {
     return api.delete(`/groups/${id}`);
   },
-  addMember(groupId: string, userId: string) {
-    return api.post(`/groups/${groupId}/members`, { userId });
+  addMember(groupId: string, userId: string, expectedCurrentGroupId?: string) {
+    return api.post(`/groups/${groupId}/members`, { userId, expectedCurrentGroupId });
   },
   removeMember(groupId: string, userId: string) {
     return api.delete(`/groups/${groupId}/members/${userId}`);

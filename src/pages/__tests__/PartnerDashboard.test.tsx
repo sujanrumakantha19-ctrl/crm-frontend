@@ -165,7 +165,7 @@ describe('Partner Dashboard', () => {
 
     expect(screen.getByText('Phone')).toBeInTheDocument()
     expect(screen.getByText('Date Submitted')).toBeInTheDocument()
-    expect(screen.getByText('Assigned Staff')).toBeInTheDocument()
+    expect(screen.getByText('Status')).toBeInTheDocument()
   })
 })
 
@@ -293,15 +293,15 @@ describe('Partner Dashboard — Pagination', () => {
     expect(screen.getAllByText('Hyderabad').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('should navigate to add-lead when clicking Get Open Leads', async () => {
+  it('should navigate to add-lead when clicking Add Lead', async () => {
     mockServiceData(mockProjects.slice(0, 2), [])
     render(<PartnerDashboard />)
 
     await waitFor(() => {
-      expect(screen.getAllByText('Get Open Leads').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText('Add Lead').length).toBeGreaterThanOrEqual(1)
     })
 
-    const addLeadButtons = screen.getAllByText('Get Open Leads')
+    const addLeadButtons = screen.getAllByText('Add Lead')
     fireEvent.click(addLeadButtons[0])
 
     expect(mockNavigate).toHaveBeenCalledWith('/partner/add-lead?projectId=proj1')

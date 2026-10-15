@@ -216,7 +216,7 @@ export default function AdminFollowUps() {
             className="h-9 px-3 border border-slate-200 rounded-md text-sm bg-white focus:border-brand-green outline-none font-medium text-slate-700 cursor-pointer"
           >
             <option value="all">All Dates</option>
-            <option value="pending">Pending Follow-ups</option>
+            <option value="pending">Pending (Overdue)</option>
             <option value="today">Today</option>
             <option value="yesterday">Yesterday</option>
             <option value="tomorrow">Tomorrow</option>
@@ -291,7 +291,7 @@ export default function AdminFollowUps() {
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-[10px] sm:text-xs font-bold text-amber-800 uppercase tracking-wide">Pending</span>
+            <span className="text-[10px] sm:text-xs font-bold text-amber-800 uppercase tracking-wide">Pending Follow-ups</span>
             <Clock size={16} className="text-amber-600 shrink-0" />
           </div>
           <p className="text-2xl sm:text-3xl font-bold text-amber-700 mt-1">{stats.pendingCount || 0}</p>

@@ -312,10 +312,11 @@ export default function AdminTasks() {
       return;
     }
     try {
-      await taskService.update(taskId, { status: newStatus } as any);
+      const res = await taskService.update(taskId, { status: newStatus, version: existing?.version } as any);
+      const serverUpdated = res.data as Task;
       setTaskList(prev => prev.map(t => {
         if ((t.id || (t as any)._id) === taskId) {
-          const updated = { ...t, status: newStatus };
+          const updated = { ...t, ...serverUpdated, status: newStatus };
           if (taskModal && (taskModal.id || (taskModal as any)._id) === taskId) setTaskModal(updated);
           return updated;
         }
@@ -323,7 +324,12 @@ export default function AdminTasks() {
       }));
       toast.success(`Status updated to "${newStatus}"`);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to update status');
+      if (err.message?.includes('modified by another user') || err.message?.includes('409') || err.status === 409) {
+        toast.error('Task was modified by another user. Reloading latest task...');
+        fetchTasks();
+      } else {
+        toast.error(err.message || 'Failed to update status');
+      }
     }
   };
 
@@ -359,7 +365,12 @@ export default function AdminTasks() {
       setIsEditingTask(false);
       toast.success('Task details updated successfully');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to update task details');
+      if (err.message?.includes('modified by another user') || err.message?.includes('409') || err.status === 409) {
+        toast.error('Task was modified by another user. Reloading latest task...');
+        fetchTasks();
+      } else {
+        toast.error(err.message || 'Failed to update task details');
+      }
     } finally {
       setSavingEdit(false);
     }
@@ -391,7 +402,12 @@ export default function AdminTasks() {
       setReopenReasonText('');
       toast.success('Task reopened successfully!');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to reopen task');
+      if (err.message?.includes('modified by another user') || err.message?.includes('409') || err.status === 409) {
+        toast.error('Task was modified by another user. Reloading latest task...');
+        fetchTasks();
+      } else {
+        toast.error(err.message || 'Failed to reopen task');
+      }
     } finally {
       setReopeningTask(false);
     }
@@ -411,13 +427,20 @@ export default function AdminTasks() {
     const updatedTask = { ...taskModal, comments: [...taskModal.comments, newComment] };
     const taskId = updatedTask.id || (updatedTask as any)._id;
     try {
-      await taskService.update(taskId, { comments: updatedTask.comments } as any);
-      setTaskList(prev => prev.map(t => (t.id || (t as any)._id) === taskId ? updatedTask : t));
-      setTaskModal(updatedTask);
+      const res = await taskService.update(taskId, { comments: updatedTask.comments, version: taskModal.version } as any);
+      const serverUpdated = res.data as Task;
+      const finalTask = { ...updatedTask, ...serverUpdated };
+      setTaskList(prev => prev.map(t => (t.id || (t as any)._id) === taskId ? finalTask : t));
+      setTaskModal(finalTask);
       setComment('');
       toast.success('Comment added');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to add comment');
+      if (err.message?.includes('modified by another user') || err.message?.includes('409') || err.status === 409) {
+        toast.error('Task was modified by another user. Reloading latest task...');
+        fetchTasks();
+      } else {
+        toast.error(err.message || 'Failed to add comment');
+      }
     }
   };
 

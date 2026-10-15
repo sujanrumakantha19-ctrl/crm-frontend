@@ -88,32 +88,30 @@ export function ShareLocationModal({ open, onClose, project }: ShareLocationModa
 
     setSending(true);
     let sentViaWaMe = false;
+    let successCount = 0;
+    let failCount = 0;
 
-    // Direct WhatsApp send when 1 lead is selected (BUG-14)
-    if (selectedLeads.length === 1) {
-      const lead = selectedLeads[0];
+    for (const lead of selectedLeads) {
       const messageText = `Hello ${lead.customerName},\n\nGreetings from Samy & Co!\n\nHere is the location link to see the land location for *${project?.name || 'our project'}*:\n📍 ${locationLink}\n\nFeel free to contact us if you have any questions or need further assistance.\n\nBest regards,\nSamy & Co Team`;
-      let cleanPhone = (lead.phone || '').replace(/[^\d]/g, '');
-      if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
 
-      window.open(`https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`, '_blank');
-      sentViaWaMe = true;
-      successCount++;
-    } else {
-      for (const lead of selectedLeads) {
-        const messageText = `Hello ${lead.customerName},\n\nGreetings from Samy & Co!\n\nHere is the location link to see the land location for *${project?.name || 'our project'}*:\n📍 ${locationLink}\n\nFeel free to contact us if you have any questions or need further assistance.\n\nBest regards,\nSamy & Co Team`;
+      let cleanPhone = (lead.phone || '').replace(/[^\d+]/g, '');
+      if (cleanPhone.length === 10) cleanPhone = '+91' + cleanPhone;
+      else if (cleanPhone.startsWith('91') && !cleanPhone.startsWith('+')) cleanPhone = '+' + cleanPhone;
 
-        let cleanPhone = (lead.phone || '').replace(/[^\d]/g, '');
-        if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
-
-        try {
-          await whatsappService.send({
-            phone: cleanPhone,
-            message: messageText,
-            type: 'text',
-          });
+      try {
+        await whatsappService.send({
+          phone: cleanPhone,
+          message: messageText,
+          type: 'text',
+        });
+        successCount++;
+      } catch {
+        if (selectedLeads.length === 1 && cleanPhone) {
+          const directPhone = cleanPhone.replace(/[^\d]/g, '');
+          window.open(`https://api.whatsapp.com/send?phone=${directPhone}&text=${encodeURIComponent(messageText)}`, '_blank');
+          sentViaWaMe = true;
           successCount++;
-        } catch {
+        } else {
           failCount++;
         }
       }

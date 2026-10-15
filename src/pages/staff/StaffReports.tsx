@@ -492,11 +492,9 @@ export default function StaffReports() {
           <p className="text-xs text-slate-500 mt-0.5 font-medium">Your personal performance & activity overview</p>
         </div>
 
-        {role === 'admin' && (
-          <button onClick={triggerDownload} className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 bg-white rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm transition-all self-start sm:self-auto">
-            <Download size={14} /> Export CSV
-          </button>
-        )}
+        <button onClick={triggerDownload} className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 bg-white rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm transition-all self-start sm:self-auto">
+          <Download size={14} /> Export CSV
+        </button>
       </div>
 
       {/* Navigation Tabs */}

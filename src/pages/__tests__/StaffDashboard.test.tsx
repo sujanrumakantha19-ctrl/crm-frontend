@@ -8,6 +8,7 @@ vi.mock('@/services', () => ({
   leadService: {
     getAll: vi.fn().mockResolvedValue({ data: [] }),
     getCounts: vi.fn().mockResolvedValue({ data: { All: 0, Open: 0, Reserved: 0, Qualified: 0, Unqualified: 0, Customer: 0 } }),
+    getFollowUps: vi.fn().mockResolvedValue({ data: [] }),
   },
   taskService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   plotService: { getMyBookings: vi.fn().mockResolvedValue({ data: [] }) },
@@ -25,6 +26,14 @@ vi.mock('@/services', () => ({
     }),
   },
 }))
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom')
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+  }
+})
 
 // ─── Mock AuthContext ──────────────────────────────────────────────
 vi.mock('@/context/AuthContext', () => ({
@@ -80,6 +89,15 @@ function mockServiceData(leads: any[], tasks: any[], activities: any[]) {
   vi.mocked(leadService.getCounts).mockResolvedValue({
     data: { All: leads.length, Open: 0, Reserved: leads.filter((l: any) => l.status === 'Open').length, Qualified: leads.filter((l: any) => l.status === 'Qualified').length, Unqualified: 0, Customer: 0 },
   } as any)
+  vi.mocked(leadService.getFollowUps).mockResolvedValue({
+    data: leads.map((l: any) => ({
+      leadId: l.id || l._id,
+      leadName: l.customerName || l.name,
+      phone: l.phone,
+      status: l.status || 'Open',
+      nextFollowUpDate: l.nextFollowUpDate || l.dateAdded || '2026-10-15',
+    })),
+  } as any)
   vi.mocked(taskService.getAll).mockResolvedValue({ data: tasks } as any)
   vi.mocked(activityLogService.getAll).mockResolvedValue({ data: activities } as any)
 }
@@ -94,6 +112,7 @@ describe('Staff Dashboard', () => {
     } as any)
     vi.mocked(taskService.getAll).mockResolvedValue({ data: [] } as any)
     vi.mocked(activityLogService.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(leadService.getFollowUps).mockResolvedValue({ data: [] } as any)
   })
 
   it('should show loading skeleton initially', () => {
@@ -130,8 +149,8 @@ describe('Staff Dashboard', () => {
     })
 
     expect(screen.getByText('Weekly Tasks Performance')).toBeInTheDocument()
-    expect(screen.getByText('Total assigned leads at each stage')).toBeInTheDocument()
-    expect(screen.getByText('Completed vs assigned tasks this week')).toBeInTheDocument()
+    expect(screen.getByText(/assigned leads at each stage/i)).toBeInTheDocument()
+    expect(screen.getByText(/Completed vs assigned tasks this week/)).toBeInTheDocument()
   })
 
   it('should render follow-ups section after loading', async () => {
@@ -157,7 +176,7 @@ describe('Staff Dashboard', () => {
       expect(screen.getByText("Today's Follow-ups")).toBeInTheDocument()
     })
 
-    expect(screen.getByText('No active leads')).toBeInTheDocument()
+    expect(screen.getByText(/No follow-ups scheduled for today/i)).toBeInTheDocument()
   })
 
   it('should display zero counts when no data', async () => {

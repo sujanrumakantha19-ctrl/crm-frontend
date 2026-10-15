@@ -21,6 +21,9 @@ interface DisplayRecord {
   projectId?: string;
   projectName?: string;
   createdAt?: string;
+  sessions?: any[];
+  isOverridden?: boolean;
+  overrideReason?: string;
 }
 
 export default function StaffAttendance() {
@@ -102,28 +105,32 @@ export default function StaffAttendance() {
     setLoading(true);
     try {
       const params: Record<string, any> = {
+        staffId: userId,
         page: currentPage,
         limit: itemsPerPage,
       };
       if (monthFilter) params.month = monthFilter;
       if (dateFilter) params.date = dateFilter;
 
-      const res = await attendanceService.getByStaff(userId, params);
+      const res = await attendanceService.getDaily(params);
       const records: DisplayRecord[] = (res.data || []).map((r: any) => ({
-        id: r.id || r._id,
+        id: r.id || r._id || `daily-${r.date}`,
         date: r.date,
-        checkIn: r.checkIn || '—',
-        checkOut: r.checkOut || '—',
-        duration: r.duration || '—',
-        status: r.status || 'Present',
-        activityType: r.activityType,
+        checkIn: r.firstCheckIn || r.checkIn || '—',
+        checkOut: r.lastCheckOut || r.checkOut || '—',
+        duration: r.formattedDuration || r.duration || '—',
+        status: (r.status as AttendanceStatus) || 'Present',
+        activityType: r.currentActivity || r.activityType || 'Office',
         projectId: r.projectId,
-        projectName: r.projectName,
-        createdAt: r.createdAt,
+        projectName: r.currentLocation || r.projectName || '—',
+        createdAt: r.createdAt || r.date,
+        sessions: r.sessions || [],
+        isOverridden: r.isOverridden,
+        overrideReason: r.overrideReason || r.overrideNotes,
       }));
 
       setMonthlyRecords(records);
-      const total = res.total ?? (res.pagination?.total || records.length);
+      const total = (res as any).total ?? ((res as any).pagination?.total || records.length);
       setTotalCount(total);
       setTotalPages(Math.max(1, Math.ceil(total / itemsPerPage)));
 
@@ -575,7 +582,7 @@ export default function StaffAttendance() {
               >
                 <option value="All">All Statuses</option>
                 <option value="Present">Present</option>
-                <option value="Half Day">Half Day (4.5 to 6 hrs)</option>
+                <option value="Half Day">Half Day (4 to 8 hrs)</option>
                 <option value="Below 4 Hours">Below 4 Hours</option>
                 <option value="Absent">Absent</option>
               </select>
@@ -643,7 +650,19 @@ export default function StaffAttendance() {
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
                         {row.projectName || '—'}
                       </td>
-                      <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <StatusBadge status={row.status} />
+                          {row.isOverridden && (
+                            <span
+                              title={row.overrideReason ? `Admin override: ${row.overrideReason}` : 'Admin override'}
+                              className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded cursor-help"
+                            >
+                              Override
+                            </span>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

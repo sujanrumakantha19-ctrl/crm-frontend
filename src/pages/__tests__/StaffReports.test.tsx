@@ -13,6 +13,8 @@ vi.mock('@/services', () => ({
   taskService: mockTaskService,
   attendanceService: mockAttendanceService,
   projectService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  reportService: { getOperationsMetrics: vi.fn().mockResolvedValue({ data: null }) },
+  userService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
 }));
 
 vi.mock('@/hooks/useDebounce', () => ({
@@ -53,6 +55,17 @@ vi.mock('recharts', () => ({
 }));
 
 import StaffReports from '@/pages/staff/StaffReports';
+import { ExportProvider } from '@/context/ExportContext';
+
+const renderWithProviders = (ui: React.ReactElement) => {
+  return render(
+    <MemoryRouter>
+      <ExportProvider>
+        {ui}
+      </ExportProvider>
+    </MemoryRouter>
+  );
+};
 
 describe('StaffReports', () => {
   beforeEach(() => {
@@ -63,35 +76,23 @@ describe('StaffReports', () => {
   });
 
   it('renders the page title after loading', async () => {
-    render(
-      <MemoryRouter>
-        <StaffReports />
-      </MemoryRouter>
-    );
+    renderWithProviders(<StaffReports />);
     const title = await screen.findByText('My Reports', {}, { timeout: 5000 });
     expect(title).toBeInTheDocument();
   });
 
   it('renders summary cards after loading', async () => {
-    render(
-      <MemoryRouter>
-        <StaffReports />
-      </MemoryRouter>
-    );
+    renderWithProviders(<StaffReports />);
     await waitFor(() => {
       expect(screen.getAllByText('My Leads').length).toBeGreaterThanOrEqual(1);
     }, { timeout: 5000 });
-    expect(screen.getByText('Conversion Rate')).toBeInTheDocument();
+    expect(screen.getAllByText('Created Leads').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Tasks Completed')).toBeInTheDocument();
     expect(screen.getAllByText('Days Present').length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders tabs after loading', async () => {
-    render(
-      <MemoryRouter>
-        <StaffReports />
-      </MemoryRouter>
-    );
+    renderWithProviders(<StaffReports />);
     await waitFor(() => {
       expect(screen.getByText('Overview')).toBeInTheDocument();
     }, { timeout: 5000 });
@@ -100,21 +101,13 @@ describe('StaffReports', () => {
   });
 
   it('renders export CSV button after loading', async () => {
-    render(
-      <MemoryRouter>
-        <StaffReports />
-      </MemoryRouter>
-    );
+    renderWithProviders(<StaffReports />);
     const btn = await screen.findByText('Export CSV', {}, { timeout: 5000 });
     expect(btn).toBeInTheDocument();
   });
 
   it('renders overview charts section after loading', async () => {
-    render(
-      <MemoryRouter>
-        <StaffReports />
-      </MemoryRouter>
-    );
+    renderWithProviders(<StaffReports />);
     await waitFor(() => {
       expect(screen.getByText('Leads Pipeline')).toBeInTheDocument();
     }, { timeout: 5000 });

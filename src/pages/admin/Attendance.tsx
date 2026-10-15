@@ -48,9 +48,9 @@ export default function AdminAttendance() {
   useEffect(() => {
     if (!selectedStaffId) return;
     let isMounted = true;
-    attendanceService.getByStaff(selectedStaffId, { limit: 1000 })
+    attendanceService.getDaily({ staffId: selectedStaffId, paginate: 'false' })
       .then(r => {
-        if (isMounted) setEmpApiRecords(r.data || []);
+        if (isMounted) setEmpApiRecords((r.data || []) as any[]);
       })
       .catch(() => {
         if (isMounted) setEmpApiRecords([]);
@@ -64,9 +64,9 @@ export default function AdminAttendance() {
     setLoading(true);
     const monthStr = `${year}-${String(month).padStart(2, '0')}`;
 
-    attendanceService.getAll({ month: monthStr })
+    attendanceService.getDaily({ month: monthStr, paginate: 'false' })
       .then(r => {
-        if (isMounted) setApiRecords(r.data || []);
+        if (isMounted) setApiRecords((r.data || []) as any[]);
       })
       .catch(() => {
         if (isMounted) setApiRecords([]);
@@ -439,13 +439,12 @@ export default function AdminAttendance() {
     if (!isCurrentMonth) return;
     setDailyModalDate(dayKey);
     setModalLoading(true);
-    attendanceService.getByDate(dayKey)
+    attendanceService.getDaily({ date: dayKey, paginate: 'false' })
       .then(res => {
         if (res.data && Array.isArray(res.data) && res.data.length > 0) {
           setApiRecords(prev => {
-            const existingIds = new Set(prev.map(r => r._id || r.id));
-            const newRecords = res.data.filter((r: any) => !existingIds.has(r._id || r.id));
-            return [...prev, ...newRecords];
+            const others = prev.filter(r => r.date !== dayKey);
+            return [...others, ...res.data];
           });
         }
       })
@@ -453,11 +452,11 @@ export default function AdminAttendance() {
       .finally(() => setModalLoading(false));
   };
 
-  // Allow admins to persist Absent / Half Day / Present for a staff member on a date (issue 28).
+  // Allow admins to persist Absent / Half Day / Present for a staff member on a date via daily overrides.
   const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
-  const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{ rec: any; newStatus: string } | null>(null);
+  const [activeOverrideConfirm, setActiveOverrideConfirm] = useState<{ rec: any; newStatus: string; activeSessionIds?: string[] } | null>(null);
 
-  const handleStatusChange = async (rec: any, newStatus: string, confirmed = false) => {
+  const handleStatusChange = async (rec: any, newStatus: string, confirmed = false, customActiveIds?: string[]) => {
     if (!newStatus || (newStatus === rec.status && newStatus !== 'Reset')) return;
 
     if (newStatus === 'Reset' || newStatus === 'Remove') {
@@ -469,7 +468,7 @@ export default function AdminAttendance() {
           status: 'Reset',
         });
         toast.success(`Override removed for ${rec.staffName} on ${formatDateStr(rec.date)}`);
-        const res = await attendanceService.getByDate(rec.date);
+        const res = await attendanceService.getDaily({ date: rec.date, paginate: 'false' });
         if (res.data && Array.isArray(res.data)) {
           setApiRecords(prev => {
             const others = prev.filter(r => (r.date !== rec.date) || (r.staffId !== rec.staffId));
@@ -486,61 +485,49 @@ export default function AdminAttendance() {
 
     const isCheckedIn = (rec.checkIn && rec.checkIn !== '-') && (!rec.checkOut || rec.checkOut === '-');
     if (newStatus === 'Absent' && isCheckedIn && !confirmed) {
-      setActiveOverrideConfirm({ rec, newStatus });
+      const activeIds = customActiveIds || (rec.sessions
+        ? rec.sessions.filter((s: any) => !s.checkOut || s.checkOut === '-' || s.checkOut === '—').map((s: any) => String(s.id || s._id))
+        : (rec.id && !String(rec.id).startsWith('absent-') ? [String(rec.id)] : []));
+      setActiveOverrideConfirm({ rec, newStatus, activeSessionIds: activeIds });
       return;
     }
 
     setSavingStatusId(rec.id);
     try {
-      if (isCheckedIn && confirmed) {
-        // Daily override only — do not corrupt running punch session
-        await attendanceService.setOverride({
-          staffId: rec.staffId,
-          date: rec.date,
-          status: newStatus,
-          confirmActiveOverride: true,
-          notes: `Admin manually overrode active checked-in staff to ${newStatus}`,
-        });
-      } else {
-        const isSynthetic = String(rec.id).startsWith('absent-') || String(rec.id).startsWith('off-') || String(rec.id).startsWith('future-');
-        if (isSynthetic) {
-          // Fabricated absent/off/future row -> create a real persisted record.
-          await attendanceService.create({
-            staffId: rec.staffId,
-            staffName: rec.staffName,
-            date: rec.date,
-            status: newStatus,
-            checkIn: '-',
-            checkOut: '-',
-            duration: '-',
-            activityType: 'Office',
-            role: rec.role || 'Sales Executive',
-          });
-        } else {
-          await attendanceService.update(rec.id, { status: newStatus });
-        }
+      const activeIds = customActiveIds || (rec.sessions
+        ? rec.sessions.filter((s: any) => !s.checkOut || s.checkOut === '-' || s.checkOut === '—').map((s: any) => String(s.id || s._id))
+        : (isCheckedIn && rec.id && !String(rec.id).startsWith('absent-') ? [String(rec.id)] : []));
 
-        // Also persist daily override audit record so daily engine and exports respect it
-        await attendanceService.setOverride({
-          staffId: rec.staffId,
-          date: rec.date,
-          status: newStatus,
-          notes: `Admin manually set status to ${newStatus}`,
-        }).catch(() => {});
-      }
+      await attendanceService.setOverride({
+        staffId: rec.staffId,
+        date: rec.date,
+        status: newStatus,
+        reason: confirmed
+          ? `Admin confirmed override to ${newStatus} for active session`
+          : `Admin manually set daily status to ${newStatus}`,
+        notes: confirmed
+          ? `Admin confirmed override to ${newStatus} for active session`
+          : `Admin manually set daily status to ${newStatus}`,
+        acknowledgedSessionIds: (newStatus === 'Absent' && activeIds.length > 0) ? activeIds : undefined,
+      });
 
       toast.success(`${rec.staffName} marked as ${newStatus} for ${formatDateStr(rec.date)}`);
 
-      // Refresh backend records for this date so the synthetic fallback is replaced.
-      const res = await attendanceService.getByDate(rec.date);
+      // Reload daily records for this date
+      const res = await attendanceService.getDaily({ date: rec.date, paginate: 'false' });
       if (res.data && Array.isArray(res.data)) {
         setApiRecords(prev => {
           const others = prev.filter(r => (r.date !== rec.date) || (r.staffId !== rec.staffId));
           return [...others, ...res.data.filter((r: any) => String(r.staffId || r.userId || r.user?.id) === rec.staffId)];
         });
       }
-    } catch {
-      toast.error(`Failed to update ${rec.staffName}'s status`);
+    } catch (err: any) {
+      if (err.data?.activeSessionIds || err.code === 'ACTIVE_SESSION_OVERRIDE_CONFIRMATION_REQUIRED' || err.status === 409 || err.message?.includes('409') || err.message?.includes('checked in')) {
+        const ids = err.data?.activeSessionIds || (rec.sessions ? rec.sessions.map((s: any) => String(s.id || s._id)) : []);
+        setActiveOverrideConfirm({ rec, newStatus, activeSessionIds: ids });
+      } else {
+        toast.error(err.message || `Failed to update ${rec.staffName}'s status`);
+      }
     } finally {
       setSavingStatusId(null);
     }
@@ -1218,8 +1205,9 @@ export default function AdminAttendance() {
           open={!!activeOverrideConfirm}
           onClose={() => setActiveOverrideConfirm(null)}
           onConfirm={async () => {
-            const { rec, newStatus } = activeOverrideConfirm;
-            await handleStatusChange(rec, newStatus, true);
+            const { rec, newStatus, activeSessionIds } = activeOverrideConfirm;
+            setActiveOverrideConfirm(null);
+            await handleStatusChange(rec, newStatus, true, activeSessionIds);
           }}
           title="Staff Member Is Currently Checked In"
           message={`This staff member is currently checked in (Check-in time: ${activeOverrideConfirm.rec.checkIn}). Marking this day Absent will override their daily attendance record without checking them out. They will still be able to check out normally. Continue?`}

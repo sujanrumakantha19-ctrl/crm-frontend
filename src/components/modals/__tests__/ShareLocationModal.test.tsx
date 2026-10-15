@@ -34,9 +34,9 @@ describe('ShareLocationModal', () => {
     render(<ShareLocationModal open={true} onClose={vi.fn()} project={mockProject} />);
 
     expect(screen.getByText('Share Project Location')).toBeInTheDocument();
-    expect(screen.getByText(/Green Valley Enclave/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Green Valley Enclave/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Greetings from/)).toBeInTheDocument();
-    expect(screen.getByText(/Samy & Co/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Samy & Co/).length).toBeGreaterThanOrEqual(1);
 
     await waitFor(() => {
       expect(screen.getByText('Ramesh Patel')).toBeInTheDocument();

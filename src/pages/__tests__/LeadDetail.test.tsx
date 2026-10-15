@@ -88,19 +88,19 @@ describe('AdminLeadDetail - Follow-up Log', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Rajesh Sharma')).toBeInTheDocument();
+      expect(screen.getByText(/Rajesh Sharma/)).toBeInTheDocument();
     });
 
     const logBtn = screen.getByRole('button', { name: /Log Follow-up/i });
     fireEvent.click(logBtn);
 
-    expect(screen.getByText('Log Follow-up')).toBeInTheDocument();
+    expect(screen.getAllByText('Log Follow-up').length).toBeGreaterThanOrEqual(1);
 
     const notesTextarea = screen.getByPlaceholderText('Details of the conversation with customer...');
     fireEvent.change(notesTextarea, { target: { value: 'Spoke with customer about villa project' } });
 
-    const saveBtns = screen.getAllByRole('button', { name: /Log Follow-up/i });
-    fireEvent.click(saveBtns[saveBtns.length - 1]);
+    const saveBtn = screen.getByRole('button', { name: /Save Follow-up/i });
+    fireEvent.click(saveBtn);
 
     await waitFor(() => {
       expect(mockLeadService.update).toHaveBeenCalledWith(

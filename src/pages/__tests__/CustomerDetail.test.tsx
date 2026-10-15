@@ -9,7 +9,11 @@ const { mockLeadService, mockProjectService, mockPlotService } = vi.hoisted(() =
     update: vi.fn(),
   },
   mockProjectService: { getAll: vi.fn() },
-  mockPlotService: { getById: vi.fn(), getAll: vi.fn() },
+  mockPlotService: {
+    getById: vi.fn(),
+    getAll: vi.fn(),
+    getCustomerBookings: vi.fn().mockResolvedValue({ success: true, data: [] }),
+  },
 }));
 
 vi.mock('@/services', () => ({
@@ -17,6 +21,7 @@ vi.mock('@/services', () => ({
   projectService: mockProjectService,
   plotService: mockPlotService,
   taskService: { create: vi.fn() },
+  userService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
 }));
 
 vi.mock('@/context/AuthContext', () => ({
@@ -39,27 +44,27 @@ describe('AdminCustomerDetail - Registered Record Detail', () => {
     mockProjectService.getAll.mockResolvedValue({
       data: [{ _id: 'proj-1', name: 'Green Valley', displayId: 'PROJ-1' }],
     });
-    mockPlotService.getAll.mockResolvedValue({
-      data: [
-        {
-          _id: 'plot-1',
-          plotNumber: '101',
-          status: 'Registered',
-          projectId: { _id: 'proj-1', name: 'Green Valley', displayId: 'PROJ-1' },
-          size: 200,
-          sizeUnit: 'Sq Yards',
-          facing: 'East',
-          type: 'Residential',
-          registrationDate: '2026-07-20',
-          bookedBy: {
-            name: 'Kavitha Reddy',
-            phone: '9876543210',
-            paymentStatus: 'Fully Paid',
-            paymentMethod: 'CASH',
-          },
-        },
-      ],
-    });
+    const mockPlot = {
+      _id: 'plot-1',
+      id: 'plot-1',
+      plotNumber: '101',
+      status: 'Registered',
+      projectId: { _id: 'proj-1', name: 'Green Valley', displayId: 'PROJ-1' },
+      size: 200,
+      sizeUnit: 'Sq Yards',
+      facing: 'East',
+      type: 'Residential',
+      registrationDate: '2026-07-20',
+      bookedBy: {
+        name: 'Kavitha Reddy',
+        phone: '9876543210',
+        paymentStatus: 'Fully Paid',
+        paymentMethod: 'CASH',
+      },
+    };
+    mockPlotService.getAll.mockResolvedValue({ data: [mockPlot] });
+    mockPlotService.getById.mockResolvedValue({ data: mockPlot });
+    mockPlotService.getCustomerBookings.mockResolvedValue({ data: [mockPlot] });
   });
 
   it('renders Customer Detail screen cleanly when navigating from Registered tab with Plot ID', async () => {

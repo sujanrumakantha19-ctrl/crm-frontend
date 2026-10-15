@@ -25,6 +25,11 @@ vi.mock('@/context/AuthContext', () => ({
   useAuth: mockUseAuth,
 }));
 
+vi.mock('@/context/ExportContext', () => ({
+  useExportContext: () => ({ isExporting: false, exportCsv: vi.fn(), startExport: vi.fn(), cancelExport: vi.fn(), setExportInfo: vi.fn() }),
+  ExportProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));

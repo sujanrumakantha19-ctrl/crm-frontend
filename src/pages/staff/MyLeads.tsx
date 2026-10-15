@@ -50,6 +50,7 @@ export default function StaffMyLeads() {
   const PAGE_LIMIT = 12;
 
   const [whatsAppLead, setWhatsAppLead] = useState<{ phone: string; name: string; projectName?: string } | null>(null);
+  const latestRequestIdRef = useRef(0);
 
   // State for qualify / unqualify confirm dialog
   const [confirmAction, setConfirmAction] = useState<{ type: 'qualify' | 'unqualify'; lead: Lead } | null>(null);
@@ -130,10 +131,12 @@ export default function StaffMyLeads() {
   // Fetch backend-driven paginated leads whenever activeTab, page, or search changes
   const fetchLeads = useCallback(async () => {
     if (!userId) return;
+    const reqId = ++latestRequestIdRef.current;
     setLoading(true);
 
     try {
       const pRes = await projectService.getAll({ ...LEAD_PROJECT_LIST_PARAMS });
+      if (reqId !== latestRequestIdRef.current) return;
       setProjects(pRes.data || []);
 
       const queryParams: Record<string, any> = {
@@ -161,13 +164,19 @@ export default function StaffMyLeads() {
       }
 
       const lRes = await leadService.getAll(queryParams);
+      if (reqId !== latestRequestIdRef.current) return;
       const filtered = lRes.data || [];
       setLeadList(filtered);
       setTotalLeads(lRes.total ?? lRes.count ?? filtered.length);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to load leads');
+      if (reqId === latestRequestIdRef.current) {
+        toast.error(err.message || 'Failed to load leads');
+      }
+    } finally {
+      if (reqId === latestRequestIdRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }, [userId, activeTab, page, debouncedSearch]);
 
   // Synchronize export info with current tab, filters, and search

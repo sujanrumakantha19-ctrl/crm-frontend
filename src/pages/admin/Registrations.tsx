@@ -300,10 +300,9 @@ export default function AdminRegistrations() {
 
   /* ── tabs & filter state ── */
   const [activeTab, setActiveTab] = useState<TabType>(() => {
-    if (typeof window !== 'undefined') {
-      const p = new URLSearchParams(window.location.search).get('tab');
-      if (p === 'upcoming' || p === 'registered') return p as TabType;
-    }
+    const search = location.search || (typeof window !== 'undefined' ? window.location.search : '');
+    const p = new URLSearchParams(search).get('tab');
+    if (p === 'upcoming' || p === 'registered') return p as TabType;
     return 'registered';
   });
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -510,7 +509,10 @@ export default function AdminRegistrations() {
       if (activeTabRef.current !== tab) return;
 
       const rawData = (res?.data || []) as Plot[];
-      const data = rawData.filter(item => tab === 'registered' ? item.status === 'Registered' : item.status === 'Booked');
+      const data = rawData.filter(item => {
+        const itemStatus = item.status || (item.registrationDate ? 'Registered' : 'Booked');
+        return tab === 'registered' ? itemStatus === 'Registered' : itemStatus === 'Booked';
+      });
       setPlots(prev => {
         const combined = replace ? data : [...prev, ...data];
         const seenIds = new Set<string>();
@@ -631,8 +633,9 @@ export default function AdminRegistrations() {
 
     // Strictly enforce active tab status: Registered plots NEVER show in Upcoming, and Booked plots NEVER show in Registered
     result = result.filter(p => {
-      if (activeTab === 'registered') return p.status === 'Registered';
-      if (activeTab === 'upcoming') return p.status === 'Booked';
+      const pStatus = p.status || (p.registrationDate ? 'Registered' : (p.expectedRegistrationDate ? 'Booked' : ''));
+      if (activeTab === 'registered') return pStatus === 'Registered';
+      if (activeTab === 'upcoming') return pStatus === 'Booked';
       return true;
     });
 
@@ -1555,6 +1558,11 @@ export default function AdminRegistrations() {
                                 <Home size={10} className="text-slate-400" />
                                 Plot {plotNum}
                               </span>
+                              {(projObj?.surveyNumber || (plot.projectId as any)?.surveyNumber) && (
+                                <span className="text-[10px] text-slate-400 font-medium">
+                                  {projObj?.surveyNumber || (plot.projectId as any)?.surveyNumber}
+                                </span>
+                              )}
                               {extraCount > 0 && (
                                 <span className="text-[10px] bg-blue-50 text-brand-blue font-bold px-1.5 py-0.5 rounded border border-blue-100/80 shrink-0" title={`Also booked: ${extraLabels}`}>
                                   +{extraCount}

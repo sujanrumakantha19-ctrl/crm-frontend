@@ -127,7 +127,7 @@ describe('AuthContext', () => {
   it('should restore checkIn state from localStorage', () => {
     localStorage.setItem('crm_checkedin', 'true')
     localStorage.setItem('crm_checkintime', '09:00')
-    localStorage.setItem('crm_checkints', '1700000000000')
+    localStorage.setItem('crm_checkints', Date.now().toString())
     mockGetMe.mockRejectedValue(new Error('no token'))
 
     const { result } = renderHook(() => useAuth(), { wrapper })

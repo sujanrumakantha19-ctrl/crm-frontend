@@ -38,7 +38,12 @@ vi.mock('@/services', () => ({
   projectService: {
     getAll: vi.fn().mockResolvedValue({ data: [] }),
   },
+  channelPartnerService: {
+    getAll: vi.fn().mockResolvedValue({ data: [] }),
+  },
 }));
+
+import { ExportProvider } from '@/context/ExportContext';
 
 describe('AdminLeads Page - All Leads Tab', () => {
   beforeEach(() => {
@@ -48,7 +53,9 @@ describe('AdminLeads Page - All Leads Tab', () => {
   it('renders "All Leads" tab as the first tab and displays total count', async () => {
     render(
       <MemoryRouter>
-        <AdminLeads />
+        <ExportProvider>
+          <AdminLeads />
+        </ExportProvider>
       </MemoryRouter>
     );
 

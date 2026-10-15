@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-const { mockPlotService, mockProjectService, mockUseAuth } = vi.hoisted(() => ({
+const { mockPlotService, mockProjectService, mockLeadService, mockUserService, mockTaskService, mockUseAuth } = vi.hoisted(() => ({
   mockPlotService: {
     getAll: vi.fn(),
     getByStatus: vi.fn(),
@@ -10,12 +10,18 @@ const { mockPlotService, mockProjectService, mockUseAuth } = vi.hoisted(() => ({
     update: vi.fn(),
   },
   mockProjectService: { getAll: vi.fn() },
+  mockLeadService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  mockUserService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  mockTaskService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   mockUseAuth: vi.fn(),
 }));
 
 vi.mock('@/services', () => ({
   plotService: mockPlotService,
   projectService: mockProjectService,
+  leadService: mockLeadService,
+  userService: mockUserService,
+  taskService: mockTaskService,
 }));
 
 vi.mock('@/hooks/useDebounce', () => ({
@@ -224,7 +230,7 @@ describe('AdminRegistrations', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/passed/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/passed/i).length).toBeGreaterThanOrEqual(1);
     }, { timeout: 5000 });
   });
 });

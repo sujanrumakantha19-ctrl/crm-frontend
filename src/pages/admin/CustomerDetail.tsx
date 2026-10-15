@@ -228,7 +228,7 @@ export default function AdminCustomerDetail() {
     initializedIdRef.current = null;
 
     (async () => {
-      const searchParams = new URLSearchParams(window.location.search);
+      const searchParams = new URLSearchParams(location.search || window.location.search);
       const plotIdFromQuery = searchParams.get('plotId') || '';
       const phoneFromQuery = searchParams.get('phone') || '';
       const tabFromQuery = searchParams.get('tab') || '';

@@ -2,10 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-const { mockLeadService, mockProjectService, mockPlotService, mockUseAuth } = vi.hoisted(() => ({
+const { mockLeadService, mockProjectService, mockPlotService, mockUserService, mockUseAuth } = vi.hoisted(() => ({
   mockLeadService: { getAll: vi.fn().mockResolvedValue({ data: [], total: 0 }), update: vi.fn().mockResolvedValue({ data: {} }) },
   mockProjectService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
-  mockPlotService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
+  mockPlotService: {
+    getAll: vi.fn().mockResolvedValue({ data: [] }),
+    getCustomerBookings: vi.fn().mockResolvedValue({ data: [] }),
+  },
+  mockUserService: { getAll: vi.fn().mockResolvedValue({ data: [] }) },
   mockUseAuth: vi.fn().mockReturnValue({
     role: 'admin',
     userId: 'user-1',
@@ -17,6 +21,7 @@ vi.mock('@/services', () => ({
   leadService: mockLeadService,
   projectService: mockProjectService,
   plotService: mockPlotService,
+  userService: mockUserService,
 }));
 
 vi.mock('@/hooks/useDebounce', () => ({
@@ -26,6 +31,11 @@ vi.mock('@/hooks/useDebounce', () => ({
 vi.mock('@/context/AuthContext', () => ({
   useAuth: mockUseAuth,
   AuthProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock('@/context/ExportContext', () => ({
+  useExportContext: () => ({ isExporting: false, exportCsv: vi.fn(), startExport: vi.fn(), cancelExport: vi.fn(), setExportInfo: vi.fn() }),
+  ExportProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock('sonner', () => ({
@@ -66,6 +76,7 @@ describe('AdminCustomers', () => {
     mockLeadService.getAll.mockResolvedValue({ data: [], total: 0 });
     mockProjectService.getAll.mockResolvedValue({ data: [] });
     mockPlotService.getAll.mockResolvedValue({ data: [] });
+    mockPlotService.getCustomerBookings.mockResolvedValue({ data: [] });
   });
 
   it('renders the page title for admin', async () => {

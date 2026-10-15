@@ -100,8 +100,8 @@ export default function AdminGroups() {
 
   useEffect(() => {
     Promise.allSettled([
-      groupService.getAll({ limit: 50 }).then(r => setGroupsList(r.data || [])).catch(() => {}),
-      userService.getAll({ role: 'staff', limit: 100 }).then(r => setStaffUsers(r.data || [])).catch(() => {}),
+      groupService.getAll({ limit: 500 }).then(r => setGroupsList(r.data || [])).catch(() => {}),
+      userService.getAll({ role: 'staff', limit: 500 }).then(r => setStaffUsers(r.data || [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -883,10 +883,10 @@ export default function AdminGroups() {
                       const mStat = (currentGroupPerf?.memberStats || []).find(
                         (ms: any) => String(ms.id) === staffId || String(ms._id) === staffId
                       );
-                      const totalLeads = mStat ? mStat.totalLeads : 0;
-                      const memberBookings = mStat ? mStat.memberBookings : 0;
-                      const totalFollowUps = mStat ? mStat.totalFollowUps : 0;
-                      const staffQualified = mStat ? mStat.staffQualified : 0;
+                      const totalLeads = mStat?.totalLeads !== undefined ? mStat.totalLeads : '—';
+                      const memberBookings = mStat?.memberBookings !== undefined ? mStat.memberBookings : '—';
+                      const totalFollowUps = mStat?.totalFollowUps !== undefined ? mStat.totalFollowUps : '—';
+                      const staffQualified = mStat?.staffQualified !== undefined ? mStat.staffQualified : '—';
 
                       return (
                         <tr key={staff.id} className="hover:bg-slate-50">
@@ -992,10 +992,10 @@ export default function AdminGroups() {
                       const mStats = (viewGroupPerformance?.memberStats || []).find(
                         (m: any) => String(m.id || m._id || m.staffId) === staffId
                       );
-                      const totalLeads = mStats?.totalLeads ?? 0;
-                      const memberBookings = mStats?.memberBookings ?? 0;
-                      const totalFollowUps = mStats?.totalFollowUps ?? 0;
-                      const staffQualified = mStats?.staffQualified ?? 0;
+                      const totalLeads = mStats?.totalLeads !== undefined ? mStats.totalLeads : '—';
+                      const memberBookings = mStats?.memberBookings !== undefined ? mStats.memberBookings : '—';
+                      const totalFollowUps = mStats?.totalFollowUps !== undefined ? mStats.totalFollowUps : '—';
+                      const staffQualified = mStats?.staffQualified !== undefined ? mStats.staffQualified : '—';
 
                       return (
                         <div key={staff.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors">

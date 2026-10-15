@@ -23,7 +23,7 @@ export const attendanceService = {
       : api.get<StaffPresenceToday[]>('/attendance/presence/today');
   },
   getDaily(params?: Record<string, string | number | undefined>) {
-    return api.get<{ data: DailyAttendanceRecord[]; summary: any; pagination: any }>('/attendance/daily', params);
+    return api.get<DailyAttendanceRecord[]>('/attendance/daily', params);
   },
   setOverride(data: { staffId: string; date: string; status: string; notes?: string; reason?: string; confirmActiveOverride?: boolean; acknowledgedSessionIds?: string[] }) {
     return api.post('/attendance/override', data);

@@ -380,6 +380,7 @@ describe('ApiClient — 401 Unauthorized', () => {
   })
 
   it('should clear token and redirect to /login on 401', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
     mockFetch.mockResolvedValue(
       jsonResponse({ success: false, error: 'Unauthorized' }, false, 401)
     )
@@ -391,11 +392,14 @@ describe('ApiClient — 401 Unauthorized', () => {
     // Role and user should be cleared
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_role')
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_user')
-    // Should redirect to login
-    expect(mockHref).toBe('/login')
+    // Should notify auth layer via event
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auth:unauthorized' })
+    )
   })
 
   it('should handle 401 on POST request', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
     mockFetch.mockResolvedValue(
       jsonResponse({ success: false }, false, 401)
     )
@@ -403,10 +407,13 @@ describe('ApiClient — 401 Unauthorized', () => {
     await expect(api.post('/leads', { name: 'Test' })).rejects.toThrow('Unauthorized')
 
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_token')
-    expect(mockHref).toBe('/login')
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auth:unauthorized' })
+    )
   })
 
   it('should handle 401 on PUT request', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
     mockFetch.mockResolvedValue(
       jsonResponse({ success: false }, false, 401)
     )
@@ -414,10 +421,13 @@ describe('ApiClient — 401 Unauthorized', () => {
     await expect(api.put('/leads/1', { name: 'Test' })).rejects.toThrow('Unauthorized')
 
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_token')
-    expect(mockHref).toBe('/login')
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auth:unauthorized' })
+    )
   })
 
   it('should handle 401 on DELETE request', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
     mockFetch.mockResolvedValue(
       jsonResponse({ success: false }, false, 401)
     )
@@ -425,10 +435,13 @@ describe('ApiClient — 401 Unauthorized', () => {
     await expect(api.delete('/leads/1')).rejects.toThrow('Unauthorized')
 
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_token')
-    expect(mockHref).toBe('/login')
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auth:unauthorized' })
+    )
   })
 
   it('should handle 401 on upload request', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
     mockFetch.mockResolvedValue(
       jsonResponse({ success: false }, false, 401)
     )
@@ -439,7 +452,9 @@ describe('ApiClient — 401 Unauthorized', () => {
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_token')
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_role')
     expect(localStorageMock.removeItem).toHaveBeenCalledWith('crm_user')
-    expect(mockHref).toBe('/login')
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auth:unauthorized' })
+    )
   })
 
   it('should clear all three localStorage keys on 401', async () => {
