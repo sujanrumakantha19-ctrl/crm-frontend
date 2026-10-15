@@ -3,7 +3,7 @@ function resolveApiBase(): string {
   if (envUrl) {
     return envUrl.replace(/\/+$/, '');
   }
-  return 'https://crm-backend-5y4p.onrender.com/api/v1';
+  return 'http://localhost:5000/api/v1';
 }
 
 export const API_BASE = resolveApiBase();
@@ -64,7 +64,7 @@ class ApiClient {
   }
 
   private async request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | undefined>): Promise<ApiResponse<T>> {
-    const url = new URL(`${this.baseUrl}${path}`, typeof window !== 'undefined' ? window.location.origin : 'https://crm-backend-5y4p.onrender.com');
+    const url = new URL(`${this.baseUrl}${path}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5000');
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
         if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
