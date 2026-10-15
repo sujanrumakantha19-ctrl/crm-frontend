@@ -467,15 +467,23 @@ export default function AdminAttendance() {
           staffName: rec.staffName,
           date: rec.date,
           status: newStatus,
-          checkIn: newStatus === 'Present' ? '-' : '-',
+          checkIn: '-',
           checkOut: '-',
           duration: '-',
-          activityType: newStatus === 'Present' ? 'Office' : 'Office',
+          activityType: 'Office',
           role: rec.role || 'Sales Executive',
         });
       } else {
         await attendanceService.update(rec.id, { status: newStatus });
       }
+
+      // Also persist daily override audit record so daily engine and exports respect it
+      await attendanceService.setOverride({
+        staffId: rec.staffId,
+        date: rec.date,
+        status: newStatus,
+        notes: `Admin manually set status to ${newStatus}`,
+      }).catch(() => {});
 
       toast.success(`${rec.staffName} marked as ${newStatus} for ${formatDateStr(rec.date)}`);
 

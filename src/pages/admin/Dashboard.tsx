@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Building2, Users, UserCheck, Home, Cake, FileCheck, CreditCard, MapPin } from 'lucide-react';
 
@@ -53,6 +53,11 @@ export default function AdminDashboard() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [presenceRoster, setPresenceRoster] = useState<StaffPresenceToday[]>([]);
   const [presenceSummary, setPresenceSummary] = useState<TodayPresenceSummary | null>(null);
+  const [presenceLoading, setPresenceLoading] = useState(true);
+  const [presenceError, setPresenceError] = useState<string | null>(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
+  const lastRequestTimestampRef = useRef<number>(0);
+  const currentISTDateRef = useRef<string>(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
   const [staff, setStaff] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [opsMetrics, setOpsMetrics] = useState<OperationsMetricsData | null>(null);
@@ -69,8 +74,13 @@ export default function AdminDashboard() {
   // Staff Attendance Today Infinite Scroll states (client-side reveal)
   const [visibleAttendanceCount, setVisibleAttendanceCount] = useState(10);
 
-  const fetchPresenceRoster = useCallback(() => {
-    attendanceService.getTodayPresence().then(r => {
+  const fetchPresenceRoster = useCallback(async () => {
+    const reqTs = Date.now();
+    lastRequestTimestampRef.current = reqTs;
+    setPresenceError(null);
+    try {
+      const r = await attendanceService.getTodayPresence();
+      if (reqTs < lastRequestTimestampRef.current) return;
       const payload = (r as any)?.data;
       if (Array.isArray(payload)) {
         setPresenceRoster(payload);
@@ -79,17 +89,50 @@ export default function AdminDashboard() {
         if (payload.summary) setPresenceSummary(payload.summary);
       }
       if ((r as any)?.summary) setPresenceSummary((r as any).summary);
-    }).catch(() => {});
+      setLastFetchedAt(Date.now());
+    } catch (err: any) {
+      if (reqTs < lastRequestTimestampRef.current) return;
+      setPresenceError(err?.message || 'Failed to load staff presence');
+    } finally {
+      if (reqTs >= lastRequestTimestampRef.current) {
+        setPresenceLoading(false);
+      }
+    }
   }, []);
 
   useEffect(() => {
     fetchPresenceRoster();
+
+    const checkMidnightAndRefresh = () => {
+      const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      if (currentISTDateRef.current !== todayIST) {
+        currentISTDateRef.current = todayIST;
+        setPresenceRoster([]);
+        setPresenceSummary(null);
+      }
+      fetchPresenceRoster();
+    };
+
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchPresenceRoster();
+        checkMidnightAndRefresh();
       }
     }, 60000);
-    return () => clearInterval(timer);
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        checkMidnightAndRefresh();
+      }
+    };
+
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
   }, [fetchPresenceRoster]);
 
   useEffect(() => {
@@ -146,18 +189,18 @@ export default function AdminDashboard() {
   const totalLeads = leadCounts.All;
   const plotsBooked = opsMetrics?.registrationPending ?? 0;
 
-  // Real-time Staff Presence Today (independent of worked hours)
+  // Real-time Staff Presence Today (independent of worked hours, strictly from presenceSummary / roster)
   const staffPresent = presenceSummary?.presentCount ?? (
     presenceRoster.length > 0
       ? presenceRoster.filter(p => p.presence === 'Present').length
-      : new Set(
-          attendance
-            .filter(a => a.status === 'Present')
-            .map(a => String((a as any).staffId?._id || (a as any).staffId || a.staffName || ''))
-            .filter(Boolean)
-        ).size
+      : 0
   );
-  const staffTotal = presenceSummary?.totalStaff ?? (staff.length || presenceRoster.length);
+  const staffTotal = presenceSummary?.totalStaff ?? (presenceRoster.length || staff.length || 0);
+
+  const isStalePresence = Boolean(
+    (presenceRoster.length > 0 || attendance.length > 0) &&
+    (presenceError || (lastFetchedAt && Date.now() - lastFetchedAt > 120000))
+  );
 
   const leadTrendsData = chartData?.monthlyTrend ?? [];
   const leadSourceData = chartData?.sourceBreakdown ?? [];
@@ -453,115 +496,119 @@ export default function AdminDashboard() {
         {/* Staff Attendance Today */}
         <div className="flex-[2] bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 flex flex-col max-h-[320px] sm:h-[420px]">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm sm:text-lg font-semibold text-slate-900">Today's Staff Attendance</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm sm:text-lg font-semibold text-slate-900">Today's Staff Attendance</h2>
+              {isStalePresence && (
+                <span className="text-[10px] font-medium bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200">
+                  Stale
+                </span>
+              )}
+            </div>
             {presenceSummary && (
               <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                 {presenceSummary.presentCount} / {presenceSummary.totalStaff} Present
               </span>
             )}
           </div>
-          <div onScroll={handleAttendanceScroll} className="flex-1 overflow-y-auto pr-1 space-y-0">
-            {presenceRoster.length > 0 ? (
-              displayedAttendance.map((item: any) => {
-                const s = item as StaffPresenceToday;
-                const isPresent = s.presence === 'Present';
-                const locStr = s.currentLocation || s.currentActivity;
 
-                return (
-                  <div key={s.staffId} className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0">
-                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                      <div className="relative shrink-0">
-                        <Avatar
-                          initials={s.initials || getInitials(s.name)}
-                          size="sm"
-                          bg={!isPresent ? 'bg-slate-300' : (s.avatarBg || getAvatarColor(s.name))}
-                        />
-                        {s.hasActiveSession && (
-                          <span
-                            className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full animate-pulse"
-                            title="Currently on duty"
-                          />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <p className="text-sm font-medium text-slate-800 truncate">{s.name}</p>
-                          {s.hasActiveSession && (
-                            <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200 shrink-0">
-                              On Duty
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 flex-wrap text-xs text-slate-400">
-                          {s.firstCheckIn && isPresent ? (
-                            <span className="text-slate-600 font-medium">In: {s.firstCheckIn}</span>
-                          ) : (
-                            <span>{s.designation || 'Sales Executive'}</span>
-                          )}
-                          {s.lastCheckOut && (
-                            <>
-                              <span className="text-slate-300">•</span>
-                              <span>Out: {s.lastCheckOut}</span>
-                            </>
-                          )}
-                          {locStr && isPresent && (
-                            <>
-                              <span className="text-slate-300">•</span>
-                              <span className="inline-flex items-center gap-0.5 text-slate-500 font-medium truncate max-w-[130px] sm:max-w-[170px]" title={locStr}>
-                                <MapPin size={11} className="text-slate-400 shrink-0" />
-                                <span className="truncate">{locStr}</span>
-                              </span>
-                            </>
-                          )}
-                        </div>
+          <div onScroll={handleAttendanceScroll} className="flex-1 overflow-y-auto pr-1">
+            {presenceLoading && displayedAttendance.length === 0 ? (
+              <div className="space-y-2 py-2">
+                {[1, 2, 3, 4].map(n => (
+                  <div key={n} className="flex items-center justify-between p-2.5 animate-pulse bg-slate-50 rounded-lg">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 bg-slate-200 rounded-full shrink-0" />
+                      <div className="space-y-1.5">
+                        <div className="w-24 h-3 bg-slate-200 rounded" />
+                        <div className="w-32 h-2.5 bg-slate-100 rounded" />
                       </div>
                     </div>
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${
-                        isPresent
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : 'bg-slate-100 text-slate-500 border border-slate-200'
-                      }`}
-                    >
-                      {s.presence}
-                    </span>
+                    <div className="w-16 h-5 bg-slate-200 rounded-full" />
                   </div>
-                );
-              })
+                ))}
+              </div>
+            ) : presenceError && displayedAttendance.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <p className="text-xs text-rose-600 mb-2 font-medium">Failed to load staff presence.</p>
+                <button
+                  type="button"
+                  onClick={() => fetchPresenceRoster()}
+                  className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded text-xs font-semibold transition-colors"
+                >
+                  Retry
+                </button>
+              </div>
             ) : displayedAttendance.length > 0 ? (
-              displayedAttendance.map((s: any) => {
-                const locStr = s.location && s.location !== '-'
-                  ? s.location
-                  : s.projectName && s.projectName !== '-'
-                  ? s.projectName
-                  : (s as any).projectId && typeof (s as any).projectId === 'object' && (s as any).projectId.location
-                  ? (s as any).projectId.location
-                  : s.activityType && s.activityType !== '-'
-                  ? s.activityType
-                  : undefined;
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[300px]">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      <th className="pb-2 pl-1">Staff Name</th>
+                      <th className="pb-2 hidden sm:table-cell">Email</th>
+                      <th className="pb-2 text-center">Presence</th>
+                      <th className="pb-2 text-right pr-1">First In</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {displayedAttendance.map((item: any) => {
+                      const s = item as StaffPresenceToday;
+                      const isPresent = s.presence === 'Present' || (item as any).status === 'Present';
+                      const locStr = s.currentLocation || s.currentActivity || (item as any).location;
+                      const staffName = s.name || (item as any).staffName || 'Staff Member';
+                      const emailStr = s.email || (item as any).email || (item as any).staffId?.email || '—';
+                      const checkInStr = s.firstCheckIn || (item as any).checkIn || '—';
 
-                return (
-                  <div key={s.id || s._id} className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0">
-                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                      <Avatar initials={getInitials(s.staffName)} size="sm" bg={s.status === 'Absent' ? 'bg-slate-300' : getAvatarColor(s.staffName)} />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-800 truncate">{s.staffName}</p>
-                        <div className="flex items-center gap-1.5 flex-wrap text-xs text-slate-400">
-                          {s.checkIn && s.status !== 'Absent' && <span>{s.checkIn}</span>}
-                          {s.checkIn && s.status !== 'Absent' && locStr && <span className="text-slate-300">•</span>}
-                          {locStr && s.status !== 'Absent' && (
-                            <span className="inline-flex items-center gap-0.5 text-slate-500 font-medium truncate max-w-[130px] sm:max-w-[170px]" title={locStr}>
-                              <MapPin size={11} className="text-slate-400 shrink-0" />
-                              <span className="truncate">{locStr}</span>
+                      return (
+                        <tr key={s.staffId || (item as any).id || (item as any)._id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="py-2.5 pl-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="relative shrink-0">
+                                <Avatar
+                                  initials={s.initials || getInitials(staffName)}
+                                  size="sm"
+                                  bg={!isPresent ? 'bg-slate-300' : (s.avatarBg || getAvatarColor(staffName))}
+                                />
+                                {s.hasActiveSession && (
+                                  <span
+                                    className="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-emerald-500 border border-white rounded-full animate-pulse"
+                                    title="Currently on duty"
+                                  />
+                                )}
+                              </div>
+                              <div className="min-w-0 max-w-[120px] sm:max-w-[140px]">
+                                <p className="text-xs font-semibold text-slate-800 truncate">{staffName}</p>
+                                {locStr && locStr !== '-' && (
+                                  <p className="flex items-center gap-0.5 text-[10px] text-slate-400 truncate" title={locStr}>
+                                    <MapPin size={9} className="text-slate-400 shrink-0" />
+                                    <span className="truncate">{locStr}</span>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 text-xs text-slate-500 truncate max-w-[140px] hidden sm:table-cell">
+                            {emailStr}
+                          </td>
+                          <td className="py-2.5 text-center">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                                isPresent
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : 'bg-slate-100 text-slate-500 border border-slate-200'
+                              }`}
+                            >
+                              {isPresent ? 'Present' : 'Absent'}
                             </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <StatusBadge status={s.status} />
-                  </div>
-                );
-              })
+                          </td>
+                          <td className="py-2.5 text-right pr-1 text-xs font-medium text-slate-600 whitespace-nowrap">
+                            {checkInStr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p className="text-sm text-slate-400 py-6 text-center">No attendance records</p>
             )}

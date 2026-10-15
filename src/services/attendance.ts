@@ -17,8 +17,10 @@ export const attendanceService = {
   getToday() {
     return api.get<AttendanceRecord[]>('/attendance/today');
   },
-  getTodayPresence() {
-    return api.get<{ data: StaffPresenceToday[]; summary: TodayPresenceSummary }>('/attendance/presence/today');
+  getTodayPresence(params?: Record<string, string | number | undefined>) {
+    return params
+      ? api.get<StaffPresenceToday[]>('/attendance/presence/today', params)
+      : api.get<StaffPresenceToday[]>('/attendance/presence/today');
   },
   getDaily(params?: Record<string, string | number | undefined>) {
     return api.get<{ data: DailyAttendanceRecord[]; summary: any; pagination: any }>('/attendance/daily', params);
